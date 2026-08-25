@@ -1,0 +1,25 @@
+[project]
+name = "settletrace"
+version = "0.1.0"
+description = "A settlement reconciliation agent that explains its exceptions instead of just flagging them."
+authors = [
+    { name = "isametron", email = "siddhantadiverma@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "pyspark>=3.5",
+    "faker>=25.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.6",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff.lint.per-file-ignores]
+# Databricks injects dbutils/spark/display at runtime; not real undefined names.
+# The catalog fallback also needs a broad except since the failure type varies by DBR version.
+"notebooks/*.py" = ["F821", "BLE001"]
