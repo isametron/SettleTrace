@@ -57,7 +57,7 @@ Run `notebooks/01_generate_synthetic_data.py` on a Databricks cluster. Widgets:
 | `num_orders`           | `150`            | Number of orders to generate                                      |
 | `seed`                 | `42`             | RNG seed — same seed + num_orders always reproduces the same batch |
 | `settlement_batch_size`| `25`             | Orders per lumped settlement batch                                 |
-| `catalog`              | `hive_metastore` | Target catalog (falls back here if Unity Catalog isn't usable)     |
+| `catalog`              | `workspace`      | Target catalog (falls back here if the requested one isn't usable) |
 | `schema_name`          | `settletrace`    | Schema the tables are written under                                |
 | `timing_lag_rate`      | `0.04`           | Fraction of orders with a refund not yet netted this batch         |
 | `mdr_mismatch_rate`    | `0.025`          | Fraction of orders charged the wrong MDR rate                      |

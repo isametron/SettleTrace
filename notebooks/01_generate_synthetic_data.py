@@ -47,7 +47,7 @@ from pyspark.sql.types import (
 dbutils.widgets.text("num_orders", "150")
 dbutils.widgets.text("seed", "42")
 dbutils.widgets.text("settlement_batch_size", "25")
-dbutils.widgets.text("catalog", "hive_metastore")
+dbutils.widgets.text("catalog", "workspace")
 dbutils.widgets.text("schema_name", "settletrace")
 dbutils.widgets.text("timing_lag_rate", "0.04")
 dbutils.widgets.text("mdr_mismatch_rate", "0.025")
@@ -146,14 +146,19 @@ n_mdr_mismatch = round(MDR_MISMATCH_RATE * NUM_ORDERS)
 n_duplicate = round(DUPLICATE_RATE * NUM_ORDERS)
 n_missing_payout = round(MISSING_PAYOUT_RATE * NUM_ORDERS)
 
+# Kept as lists, not sets: iterating a set of strings has an order that
+# depends on Python's per-process hash randomization, not just SEED. The
+# timing-lag loop below draws from the shared `random` stream while
+# iterating, so a randomized iteration order would silently make the output
+# non-reproducible even with a fixed seed.
 cursor = 0
-timing_lag_ids = set(shuffled_order_ids[cursor : cursor + n_timing_lag])
+timing_lag_ids = shuffled_order_ids[cursor : cursor + n_timing_lag]
 cursor += n_timing_lag
-mdr_mismatch_ids = set(shuffled_order_ids[cursor : cursor + n_mdr_mismatch])
+mdr_mismatch_ids = shuffled_order_ids[cursor : cursor + n_mdr_mismatch]
 cursor += n_mdr_mismatch
-duplicate_ids = set(shuffled_order_ids[cursor : cursor + n_duplicate])
+duplicate_ids = shuffled_order_ids[cursor : cursor + n_duplicate]
 cursor += n_duplicate
-missing_payout_ids = set(shuffled_order_ids[cursor : cursor + n_missing_payout])
+missing_payout_ids = shuffled_order_ids[cursor : cursor + n_missing_payout]
 
 exception_type_by_order_id = {}
 for oid in timing_lag_ids:
@@ -411,16 +416,16 @@ for label in [
 # MAGIC %md
 # MAGIC ## Write to Delta tables
 # MAGIC
-# MAGIC Falls back to `hive_metastore` if the requested catalog isn't usable
-# MAGIC (e.g. Unity Catalog isn't enabled on this workspace).
+# MAGIC Falls back to `workspace` if the requested catalog isn't usable
+# MAGIC (e.g. this workspace is Unity-Catalog-only and has no `hive_metastore`).
 
 # COMMAND ----------
 
 try:
     spark.sql(f"SHOW SCHEMAS IN {CATALOG}")
 except Exception as e:
-    print(f"Catalog '{CATALOG}' not usable ({e}); falling back to 'hive_metastore'")
-    CATALOG = "hive_metastore"
+    print(f"Catalog '{CATALOG}' not usable ({e}); falling back to 'workspace'")
+    CATALOG = "workspace"
 
 spark.sql(f"CREATE SCHEMA IF NOT EXISTS {CATALOG}.{SCHEMA_NAME}")
 

@@ -181,13 +181,54 @@ Confirmed reproducibility directly: ran the export script twice back-to-back
 and diffed `md5sum` of all four CSVs — identical both times (after the uuid
 fix above).
 
+### Databricks auth done + catalog corrected
+
+User ran `databricks auth login` themselves — profile `siddhant verma` saved,
+authenticated as `siddhantadiverma@gmail.com` against
+`dbc-6e186b0c-cfb8.cloud.databricks.com`. Checked catalogs from the CLI:
+this workspace is Unity-Catalog-only — `hive_metastore` **does not exist**
+(`databricks catalogs get hive_metastore` errors), so the notebook's original
+default/fallback catalog would have failed outright. The real usable catalog
+here is `workspace` (a `MANAGED_CATALOG`, with `workspace.default` schema
+auto-created). Updated the `catalog` widget default and the fallback target
+in `notebooks/01_generate_synthetic_data.py` and `scripts/export_demo_batch.py`
+from `hive_metastore` to `workspace`.
+
+### Second determinism bug: `set()` iteration order
+
+While re-verifying reproducibility after the catalog fix above, the exported
+CSVs changed between runs *again* despite the seed and despite the earlier
+`uuid.uuid4()` fix. Root-caused by testing with `PYTHONHASHSEED=0` fixed
+across two runs — output became identical, confirming the cause: the
+exception-category order-id sets (`timing_lag_ids`, `mdr_mismatch_ids`,
+`duplicate_ids`, `missing_payout_ids`) were built as `set()`s of UUID
+strings. Python randomizes string hashing per process by default
+(`PYTHONHASHSEED`), so iterating such a set has an order that isn't governed
+by `SEED` at all. The timing-lag refund-forcing loop draws from the shared
+`random` stream *while* iterating one of these sets — so a different
+iteration order silently reassigned which random refund amount landed on
+which order, changing `orders.csv`/`ground_truth.csv` (and, on a later test
+with a larger diff, `settlement_report.csv` too) between runs with identical
+seeds.
+
+Fixed by keeping these four as plain list slices of the already-shuffled
+`shuffled_order_ids` (dropping the `set()` wrapper) instead of converting to
+sets — nothing else in the notebook does membership testing against them, so
+the change is safe. Reran the export script 3x with default (randomized)
+`PYTHONHASHSEED` afterward and confirmed identical md5 checksums every time.
+
+Lesson for later notebook work: any `set()` built from strings and then
+*iterated* (not just membership-tested) is a reproducibility trap unless
+`PYTHONHASHSEED` is pinned externally — safer to just avoid iterating sets
+built from strings when order can affect output.
+
 ### Not yet verified
 
-Same caveat as Day 1: everything above was verified by exec'ing the notebook
-logic locally with fake Spark/Databricks stubs (no local JDK available), not
-by an actual run on a live Databricks cluster. The Delta-write path and
-`SHOW SCHEMAS`/catalog-fallback logic still need a real run once Databricks
-auth + the Git folder link are set up.
+Everything above was verified by exec'ing the notebook logic locally with
+fake Spark/Databricks stubs (no local JDK available), not by an actual run on
+a live Databricks cluster. The Delta-write path still needs a real run —
+next step is linking the GitHub repo to the workspace as a Git folder, then
+running the notebook there.
 
 ### Files touched
 

@@ -48,8 +48,8 @@ eb5cf467-80ba-4d64-ba0e-cfea958ca9ba,clean_match,Amounts reconcile exactly; no a
 e3e9de99-f10c-418b-9eb0-e38a675dd5af,clean_match,Amounts reconcile exactly; no action needed.,d499da99-45c4-4a3e-a9da-484a80759f1f
 a8499b92-6b52-42e3-94fc-dd549e8fc965,clean_match,Amounts reconcile exactly; no action needed.,d31edf1a-e9ff-4cae-81c8-ca8c2a1f955a
 b758588d-ab73-495b-b44a-54b842c18a62,clean_match,Amounts reconcile exactly; no action needed.,ce7607ad-f7a6-4b94-bb5a-611af1b64afe
-750cab75-4ccc-4bc2-a53f-8a28abf3e3fc,timing_lag_refund,Refund of 730.75 issued on 2026-01-08 was not netted in this settlement batch; expected in the next cycle.,56b60afc-ded2-45d0-bf1e-83664b8e63d4
-ff9ab5c2-9f04-4aed-b552-332702627f73,timing_lag_refund,Refund of 987.56 issued on 2026-01-08 was not netted in this settlement batch; expected in the next cycle.,f6802cdb-77e4-40c7-9d7b-c313cde22f1c
+750cab75-4ccc-4bc2-a53f-8a28abf3e3fc,timing_lag_refund,Refund of 269.5 issued on 2026-01-07 was not netted in this settlement batch; expected in the next cycle.,56b60afc-ded2-45d0-bf1e-83664b8e63d4
+ff9ab5c2-9f04-4aed-b552-332702627f73,timing_lag_refund,Refund of 2456.28 issued on 2026-01-10 was not netted in this settlement batch; expected in the next cycle.,f6802cdb-77e4-40c7-9d7b-c313cde22f1c
 e1805081-5958-4499-aeea-163e21e8ac68,clean_match,Amounts reconcile exactly; no action needed.,f76c8ede-c110-4266-a408-a6dc1346d1a9
 8b10550c-d570-4f32-b02c-dd20286218b8,clean_match,Amounts reconcile exactly; no action needed.,b966442a-ad23-4d36-9c32-2c9739c1e262
 0200b1f0-8768-484f-a76a-fde6ce9e1a11,clean_match,Amounts reconcile exactly; no action needed.,f79efd70-65bc-4272-badd-7ea3aca5e2fd
@@ -77,10 +77,10 @@ fbc9f87a-f668-4617-94a1-875d2db69edb,clean_match,Amounts reconcile exactly; no a
 6e6981a3-5d3d-4e56-b270-e4faabae4f43,clean_match,Amounts reconcile exactly; no action needed.,f396ea37-f065-4817-a87a-48509d9b6231
 d9178793-a9d3-42e6-905c-c6869f871ce7,clean_match,Amounts reconcile exactly; no action needed.,5edb0d3c-b0b6-4bcf-8860-1833479d0cda
 5380b904-688c-4015-aab9-7e494f2d4796,clean_match,Amounts reconcile exactly; no action needed.,f3579560-71d7-4665-b181-8dcf379efc6e
-f0bbac67-aa38-40a1-aba2-5efe311c6eb6,timing_lag_refund,Refund of 1655.66 issued on 2026-01-11 was not netted in this settlement batch; expected in the next cycle.,196f4dfa-5cd8-4e1a-9afe-c8a93c71e0be
+f0bbac67-aa38-40a1-aba2-5efe311c6eb6,timing_lag_refund,Refund of 3431.81 issued on 2026-01-09 was not netted in this settlement batch; expected in the next cycle.,196f4dfa-5cd8-4e1a-9afe-c8a93c71e0be
 67f48ad5-4d0b-4d1a-91b0-e1d99d9262af,clean_match,Amounts reconcile exactly; no action needed.,8b621d41-5e09-49ee-af88-bdecfb1e143b
 9479e1e6-c927-4d9b-ae0d-264835ce8841,clean_match,Amounts reconcile exactly; no action needed.,5bd20c98-a513-4ea0-ba53-e34de6d5901d
-82dc4c8e-36b5-429a-acf5-e81e71316269,timing_lag_refund,Refund of 3228.55 issued on 2026-01-09 was not netted in this settlement batch; expected in the next cycle.,30974b2b-46a0-4a9b-a5ec-7acd0f8035f5
+82dc4c8e-36b5-429a-acf5-e81e71316269,timing_lag_refund,Refund of 1557.6 issued on 2026-01-11 was not netted in this settlement batch; expected in the next cycle.,30974b2b-46a0-4a9b-a5ec-7acd0f8035f5
 15b52908-a8aa-4158-ab70-e525bc67f831,clean_match,Amounts reconcile exactly; no action needed.,d918b3e5-f2f2-4eef-9f45-dbfdf7dc67e0
 f3b63fe1-d184-4324-97e8-392a55cee5db,clean_match,Amounts reconcile exactly; no action needed.,a9ab364a-1777-48cb-b468-5b98d2fe2fde
 0640be0f-25b8-4d4b-b2fa-2de8ce7ae7f6,clean_match,Amounts reconcile exactly; no action needed.,98de8ebb-a3b5-4ece-a446-be72364c911a
@@ -127,7 +127,7 @@ b856d035-3dc9-4290-95ea-bb2730e912f2,clean_match,Amounts reconcile exactly; no a
 b63b4dc3-a559-4463-b9e1-3ceab0cbc61f,clean_match,Amounts reconcile exactly; no action needed.,18b87245-6e8f-45a1-97dd-ed8115da705c
 a9f948b2-4e63-44bb-be49-3f43b118f68d,timing_lag_refund,Refund of 999.68 issued on 2026-01-12 was not netted in this settlement batch; expected in the next cycle.,cfd01cbd-5f65-48ce-bd21-bc11be9d61ee
 bef59fe6-ff23-4d5f-aced-d15d58007c02,clean_match,Amounts reconcile exactly; no action needed.,96229348-0f5a-49d3-8e6e-5003214f3f12
-3b048a8b-405b-4dc9-8e7e-d827455ac762,timing_lag_refund,Refund of 908.6 issued on 2026-01-13 was not netted in this settlement batch; expected in the next cycle.,5463adc7-8fca-4b6a-8fc4-2092f4e559e5
+3b048a8b-405b-4dc9-8e7e-d827455ac762,timing_lag_refund,Refund of 990.53 issued on 2026-01-12 was not netted in this settlement batch; expected in the next cycle.,5463adc7-8fca-4b6a-8fc4-2092f4e559e5
 c31edbbc-f36c-462b-892e-6161be2d740a,clean_match,Amounts reconcile exactly; no action needed.,5a856750-692a-4139-9f4a-8ca1ab85fd59
 96ef2ad6-b97e-4703-86c8-adfe7bf47042,clean_match,Amounts reconcile exactly; no action needed.,c012a0ff-f0ed-4303-aa53-c19cdfa4bb9f
 4bd6cee6-31b1-4099-9527-21e719bc143e,clean_match,Amounts reconcile exactly; no action needed.,b8976ec5-ea74-4b18-9e3b-496f6c4596f6

@@ -92,7 +92,7 @@ def main():
     dbutils.widgets.text("num_orders", NUM_ORDERS)
     dbutils.widgets.text("seed", SEED)
     dbutils.widgets.text("settlement_batch_size", SETTLEMENT_BATCH_SIZE)
-    dbutils.widgets.text("catalog", "hive_metastore")
+    dbutils.widgets.text("catalog", "workspace")
     dbutils.widgets.text("schema_name", "settletrace")
 
     def display(_df):
