@@ -35,9 +35,15 @@ class FakeWidgets:
         return self._values[name]
 
 
+class FakeLibrary:
+    def restartPython(self):
+        pass
+
+
 class FakeDbutils:
     def __init__(self):
         self.widgets = FakeWidgets()
+        self.library = FakeLibrary()
 
 
 class FakeDataFrame:

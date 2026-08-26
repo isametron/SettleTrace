@@ -28,6 +28,14 @@
 
 # COMMAND ----------
 
+# MAGIC %pip install -q faker
+
+# COMMAND ----------
+
+dbutils.library.restartPython()
+
+# COMMAND ----------
+
 import random
 import uuid
 from collections import Counter
