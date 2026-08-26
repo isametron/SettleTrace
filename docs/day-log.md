@@ -100,3 +100,101 @@ Spark/Delta write path itself.
 - `notebooks/01_generate_synthetic_data.py` (new)
 - `README.md` (expanded with setup/run instructions)
 - `docs/day-log.md` (this file, new)
+
+## Day 2 — 2026-08-27: Inject realistic messiness + freeze a demo batch
+
+**Goal:** add the five exception categories from the plan on top of the clean
+Day 1 data, spot-check that the ground-truth labels are actually correct, and
+freeze a fixed 100–200 row batch as the reproducible demo fixture.
+
+### Exception injection (`notebooks/01_generate_synthetic_data.py`)
+
+Every order now gets exactly one label, assigned to disjoint seeded-random
+subsets before settlement lines are generated:
+
+- `timing_lag_refund` (4%) — order has a refund; `settlement_report` doesn't
+  net it this batch (`refund_adjustment=0` even though `orders.refund_amount`
+  is set). Forces a refund onto the order if the natural 15% refund roll
+  didn't already give it one.
+- `mdr_rate_mismatch` (2.5%) — MDR charged at `expected_mdr_rate + 0.001`
+  (e.g. 2.1% instead of 2%) instead of the agreed rate.
+- `duplicate_transaction` (1.5%) — a settlement line is appended as a literal
+  copy of an existing one (same `transaction_id`), after the base
+  `settlement_report` is built.
+- `missing_payout` (1.5%) — the order's settlement line is skipped entirely.
+- Everything else (~90.7% at the canonical N=150) — `clean_match`.
+
+A new `ground_truth` table (order_id, exception_type, expected_reasoning,
+related_transaction_id) is the answer key — one row per order, including the
+clean ones. It's explicitly *not* something a reconciliation engine gets to
+see; it exists to grade that engine's accuracy later. `expected_reasoning`
+is a short human-readable explanation per row (e.g. "Refund of 823.06 issued
+on 2026-01-06 was not netted in this settlement batch; expected in the next
+cycle.") — the same style of reasoning SettleTrace's own agent should
+eventually produce.
+
+`bank_feed` generation now runs *after* exception injection, off the
+(possibly messy) `settlement_report` — a duplicate or missing line changes
+what the bank actually credits for that batch, same as production.
+
+### Bug found and fixed: `uuid.uuid4()` ignores the seed
+
+First implementation kept `uuid.uuid4()` for `order_id`/`transaction_id`.
+Ran the export script twice and diffed checksums — `orders.csv`,
+`settlement_report.csv`, and `ground_truth.csv` changed between runs despite
+the fixed seed; only `bank_feed.csv` (which has no UUID columns) stayed
+identical. Cause: `uuid.uuid4()` draws from `os.urandom()`, not Python's
+`random` module, so `random.seed(SEED)` never touched it — silently breaking
+the "reproducible, not regenerated randomly" requirement.
+
+Fixed with a `new_id()` helper: `uuid.UUID(int=random.getrandbits(128),
+version=4)`, which derives a UUID4 from the seeded `random` module instead.
+Reran twice and confirmed identical checksums across all four CSVs before
+moving on — this is the kind of bug that would have silently invalidated the
+whole "fixed demo batch" premise if it had shipped.
+
+### Validation — replacing "spot-check ~10 rows" with something stronger
+
+Rather than only eyeballing rows, the validation cell programmatically checks
+every ground_truth row against the raw data it claims to describe (e.g. a row
+labeled `duplicate_transaction` must have exactly 2 settlement rows sharing a
+`transaction_id`; `missing_payout` must have 0; `mdr_rate_mismatch` must have
+a fee that doesn't match `orders.expected_mdr_rate`), plus a category-count
+check and the existing bank_feed-sum check from Day 1. It then prints ~2
+sample rows per category. Manually read through the printed samples and the
+exported `ground_truth.csv` — labels and reasoning text matched the underlying
+numbers in every case checked.
+
+### Demo batch (`scripts/export_demo_batch.py`, `data/demo_batch/*.csv`)
+
+Added a committed export script that runs the notebook's own generation code
+locally (same `dbutils`/`spark`/`display` stubbing trick as the Day 1 dry-run
+harness) and writes `orders.csv`, `settlement_report.csv`, `bank_feed.csv`,
+`ground_truth.csv` to `data/demo_batch/`. This is the single source of truth
+for generation logic — the export script doesn't reimplement it, just exec's
+the notebook file. Canonical parameters: `num_orders=150`, `seed=42` (150 is
+inside the requested 100–200 row range; label distribution at this size is
+136 clean / 6 timing-lag / 4 MDR-mismatch / 2 duplicate / 2 missing-payout —
+90.7% clean, matching the "90%+ clean" target).
+
+Confirmed reproducibility directly: ran the export script twice back-to-back
+and diffed `md5sum` of all four CSVs — identical both times (after the uuid
+fix above).
+
+### Not yet verified
+
+Same caveat as Day 1: everything above was verified by exec'ing the notebook
+logic locally with fake Spark/Databricks stubs (no local JDK available), not
+by an actual run on a live Databricks cluster. The Delta-write path and
+`SHOW SCHEMAS`/catalog-fallback logic still need a real run once Databricks
+auth + the Git folder link are set up.
+
+### Files touched
+
+- `notebooks/01_generate_synthetic_data.py` (exception injection, `ground_truth`
+  table, `new_id()` determinism fix, widened widgets, revised validation cell)
+- `scripts/export_demo_batch.py` (new)
+- `data/demo_batch/orders.csv`, `settlement_report.csv`, `bank_feed.csv`,
+  `ground_truth.csv` (new — committed, frozen demo batch)
+- `README.md` (Day 2 status, widget table, demo-batch section)
+- `docs/day-log.md` (this section)

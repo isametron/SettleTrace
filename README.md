@@ -10,8 +10,12 @@ instead of just flagging them.
 ## Status
 
 Day 1: repo + environment setup, and a synthetic data generator producing clean,
-linked `orders` / `settlement_report` / `bank_feed` data at any scale. No
-reconciliation/matching logic yet, and no injected exceptions yet — that's next.
+linked `orders` / `settlement_report` / `bank_feed` data at any scale.
+
+Day 2: injected realistic messiness (timing-lag refunds, MDR rate mismatches,
+duplicate transactions, missing payouts) on top of the clean batch, plus a
+`ground_truth` answer-key table, and froze a reproducible 150-row demo batch
+under `data/demo_batch/`. No matching/reconciliation engine yet — that's next.
 
 ## Stack
 
@@ -48,15 +52,40 @@ one (see `notebooks/01_generate_synthetic_data.py`'s docstring-style comments).
 
 Run `notebooks/01_generate_synthetic_data.py` on a Databricks cluster. Widgets:
 
-| Widget                   | Default          | Meaning                                      |
-|---------------------------|------------------|-----------------------------------------------|
-| `num_orders`               | `50`             | Number of orders to generate                  |
-| `seed`                      | `42`             | RNG seed, for reproducibility                  |
-| `settlement_batch_size`     | `25`             | Orders per lumped settlement batch             |
-| `catalog`                   | `hive_metastore` | Target catalog (falls back here if Unity Catalog isn't usable) |
-| `schema_name`               | `settletrace`    | Schema the three tables are written under      |
+| Widget                | Default          | Meaning                                                          |
+|-----------------------|------------------|-------------------------------------------------------------------|
+| `num_orders`           | `150`            | Number of orders to generate                                      |
+| `seed`                 | `42`             | RNG seed — same seed + num_orders always reproduces the same batch |
+| `settlement_batch_size`| `25`             | Orders per lumped settlement batch                                 |
+| `catalog`              | `hive_metastore` | Target catalog (falls back here if Unity Catalog isn't usable)     |
+| `schema_name`          | `settletrace`    | Schema the tables are written under                                |
+| `timing_lag_rate`      | `0.04`           | Fraction of orders with a refund not yet netted this batch         |
+| `mdr_mismatch_rate`    | `0.025`          | Fraction of orders charged the wrong MDR rate                      |
+| `duplicate_rate`       | `0.015`          | Fraction of orders with a duplicated settlement line                |
+| `missing_payout_rate`  | `0.015`          | Fraction of orders with no settlement line at all                   |
 
-It writes `orders`, `settlement_report`, and `bank_feed` as Delta tables under
-`<catalog>.<schema_name>`, after an inline validation cell asserts the batch is
-fully linked (every settlement line maps to a real order, every bank credit
-sums to its batch's net settlement amount, no orphans).
+It writes `orders`, `settlement_report`, `bank_feed`, and `ground_truth` as Delta
+tables under `<catalog>.<schema_name>`, after an inline validation cell checks
+every exception category against the raw data (not just its own label) and
+prints a sample of each category for a manual spot-check.
+
+`ground_truth` is the answer key — one row per order labeling it `clean_match`
+or one of the four exception types, with a short explanation. It's what a real
+reconciliation engine would need to reconstruct on its own; it exists here only
+to measure that engine's accuracy later.
+
+## Demo batch
+
+`data/demo_batch/*.csv` is a frozen, checked-in export of the canonical run
+(`num_orders=150`, `seed=42`) — the fixed dataset the demo/reconciliation work
+should build against, so results don't change just because someone reran the
+generator. Regenerate it with:
+
+```
+uv run python scripts/export_demo_batch.py
+```
+
+This runs the notebook's own generation logic locally (stubbing the
+Databricks-injected `dbutils`/`spark`/`display`), so there's one source of
+truth for the generation logic — it isn't duplicated between the notebook and
+the export script.

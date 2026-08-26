@@ -2,22 +2,35 @@
 # MAGIC %md
 # MAGIC # 01 — Generate Synthetic Settlement Data
 # MAGIC
-# MAGIC Produces three linked, **clean** (no injected exceptions yet) tables that simulate a
-# MAGIC lumped Razorpay-style settlement:
+# MAGIC Produces four linked tables that simulate a lumped Razorpay-style settlement,
+# MAGIC with realistic messiness injected on top of an otherwise clean batch:
 # MAGIC
 # MAGIC - `orders` — the internal ledger: what the merchant's system thinks happened.
 # MAGIC - `settlement_report` — per-order line items (gross amount, MDR fee, GST-on-MDR,
 # MAGIC   refund adjustment, net amount) grouped into settlement batches.
 # MAGIC - `bank_feed` — the lumped bank-side reality: one credit per settlement batch,
 # MAGIC   landing T+2 after the batch's order date.
+# MAGIC - `ground_truth` — the answer key: which orders are exact matches vs. which of
+# MAGIC   four exception types they hit, and why. Not something a real reconciliation
+# MAGIC   engine gets to see — this exists purely to measure that engine's accuracy.
 # MAGIC
-# MAGIC Scale is controlled by the `num_orders` widget. Re-running is idempotent
-# MAGIC (tables are overwritten each run).
+# MAGIC Exception categories injected (the rest are clean matches):
+# MAGIC - **timing_lag_refund** — the order has a refund, but it isn't netted into this
+# MAGIC   settlement batch yet (expected to land next cycle).
+# MAGIC - **mdr_rate_mismatch** — MDR was charged at a different rate than agreed.
+# MAGIC - **duplicate_transaction** — the same settlement line appears twice.
+# MAGIC - **missing_payout** — the order has no settlement line in this batch at all.
+# MAGIC
+# MAGIC Scale is controlled by the `num_orders` widget; exception rates by the
+# MAGIC `*_rate` widgets. Everything is seeded (`seed` widget), so a given
+# MAGIC `num_orders` + `seed` always reproduces byte-identical output — re-running
+# MAGIC is idempotent (tables are overwritten each run).
 
 # COMMAND ----------
 
 import random
 import uuid
+from collections import Counter
 from datetime import date, timedelta
 
 from faker import Faker
@@ -31,19 +44,28 @@ from pyspark.sql.types import (
 
 # COMMAND ----------
 
-dbutils.widgets.text("num_orders", "50")
+dbutils.widgets.text("num_orders", "150")
 dbutils.widgets.text("seed", "42")
 dbutils.widgets.text("settlement_batch_size", "25")
 dbutils.widgets.text("catalog", "hive_metastore")
 dbutils.widgets.text("schema_name", "settletrace")
+dbutils.widgets.text("timing_lag_rate", "0.04")
+dbutils.widgets.text("mdr_mismatch_rate", "0.025")
+dbutils.widgets.text("duplicate_rate", "0.015")
+dbutils.widgets.text("missing_payout_rate", "0.015")
 
 NUM_ORDERS = int(dbutils.widgets.get("num_orders"))
 SEED = int(dbutils.widgets.get("seed"))
 BATCH_SIZE = int(dbutils.widgets.get("settlement_batch_size"))
 CATALOG = dbutils.widgets.get("catalog")
 SCHEMA_NAME = dbutils.widgets.get("schema_name")
+TIMING_LAG_RATE = float(dbutils.widgets.get("timing_lag_rate"))
+MDR_MISMATCH_RATE = float(dbutils.widgets.get("mdr_mismatch_rate"))
+DUPLICATE_RATE = float(dbutils.widgets.get("duplicate_rate"))
+MISSING_PAYOUT_RATE = float(dbutils.widgets.get("missing_payout_rate"))
 
 MDR_RATE = 0.02
+MDR_MISMATCH_DELTA = 0.001  # charged rate = expected + this, e.g. 2% -> 2.1%
 GST_RATE = 0.18
 REFUND_PROBABILITY = 0.15
 SETTLEMENT_LAG_DAYS = 2
@@ -52,6 +74,13 @@ random.seed(SEED)
 fake = Faker()
 Faker.seed(SEED)
 
+
+def new_id() -> str:
+    # uuid.uuid4() draws from os.urandom(), not Python's random module, so it
+    # would ignore SEED and break reproducibility. This derives a UUID4 from
+    # the seeded random module instead.
+    return str(uuid.UUID(int=random.getrandbits(128), version=4))
+
 # COMMAND ----------
 
 # MAGIC %md
@@ -59,6 +88,8 @@ Faker.seed(SEED)
 # MAGIC
 # MAGIC Orders are laid out `BATCH_SIZE` per day, so grouping by order date later
 # MAGIC produces the same batches used for settlement — mirroring a daily settlement cycle.
+# MAGIC ~15% get a natural refund a few days later; this is independent of the
+# MAGIC `timing_lag_refund` exception injected below.
 
 # COMMAND ----------
 
@@ -82,7 +113,7 @@ for i in range(NUM_ORDERS):
 
     orders.append(
         {
-            "order_id": str(uuid.uuid4()),
+            "order_id": new_id(),
             "customer_id": f"CUST-{random.randint(1, NUM_CUSTOMERS):05d}",
             "order_amount": order_amount,
             "order_date": order_date,
@@ -93,13 +124,66 @@ for i in range(NUM_ORDERS):
         }
     )
 
+orders_by_id = {o["order_id"]: o for o in orders}
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Assign exception labels
+# MAGIC
+# MAGIC Every order gets exactly one label — one of the four exception types, or
+# MAGIC `clean_match`. Labels are assigned to disjoint, seeded-random subsets of
+# MAGIC orders before settlement lines are generated, so the generation step below
+# MAGIC can just branch on the label.
+
+# COMMAND ----------
+
+shuffled_order_ids = [o["order_id"] for o in orders]
+random.shuffle(shuffled_order_ids)
+
+n_timing_lag = round(TIMING_LAG_RATE * NUM_ORDERS)
+n_mdr_mismatch = round(MDR_MISMATCH_RATE * NUM_ORDERS)
+n_duplicate = round(DUPLICATE_RATE * NUM_ORDERS)
+n_missing_payout = round(MISSING_PAYOUT_RATE * NUM_ORDERS)
+
+cursor = 0
+timing_lag_ids = set(shuffled_order_ids[cursor : cursor + n_timing_lag])
+cursor += n_timing_lag
+mdr_mismatch_ids = set(shuffled_order_ids[cursor : cursor + n_mdr_mismatch])
+cursor += n_mdr_mismatch
+duplicate_ids = set(shuffled_order_ids[cursor : cursor + n_duplicate])
+cursor += n_duplicate
+missing_payout_ids = set(shuffled_order_ids[cursor : cursor + n_missing_payout])
+
+exception_type_by_order_id = {}
+for oid in timing_lag_ids:
+    exception_type_by_order_id[oid] = "timing_lag_refund"
+for oid in mdr_mismatch_ids:
+    exception_type_by_order_id[oid] = "mdr_rate_mismatch"
+for oid in duplicate_ids:
+    exception_type_by_order_id[oid] = "duplicate_transaction"
+for oid in missing_payout_ids:
+    exception_type_by_order_id[oid] = "missing_payout"
+
+# A timing-lag order must actually have a refund on it; force one if the
+# natural 15% roll didn't already give it one.
+for oid in timing_lag_ids:
+    o = orders_by_id[oid]
+    if o["refund_amount"] is None:
+        refund_fraction = random.uniform(0.2, 1.0)
+        o["refund_amount"] = round(o["order_amount"] * refund_fraction, 2)
+        o["refund_date"] = o["order_date"] + timedelta(days=random.randint(1, 3))
+
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Generate `settlement_report`
 # MAGIC
-# MAGIC One line per order, netting MDR fee, GST-on-MDR, and any refund out of the gross
-# MAGIC amount. All orders in the same batch share one `utr_number`.
+# MAGIC One line per order (skipped entirely for `missing_payout`), netting MDR fee,
+# MAGIC GST-on-MDR, and any refund out of the gross amount. `mdr_rate_mismatch` charges
+# MAGIC the wrong rate; `timing_lag_refund` deliberately fails to net the refund.
+# MAGIC `duplicate_transaction` is applied afterwards, as a literal copy of an
+# MAGIC existing line. All orders in the same batch share one `utr_number`.
 
 # COMMAND ----------
 
@@ -114,15 +198,27 @@ batch_id_by_batch = {
 
 settlement_report = []
 for o in orders:
+    exception_type = exception_type_by_order_id.get(o["order_id"], "clean_match")
+    if exception_type == "missing_payout":
+        continue
+
     gross_amount = o["order_amount"]
-    mdr_fee = round(gross_amount * o["expected_mdr_rate"], 2)
+    charged_rate = o["expected_mdr_rate"]
+    if exception_type == "mdr_rate_mismatch":
+        charged_rate += MDR_MISMATCH_DELTA
+    mdr_fee = round(gross_amount * charged_rate, 2)
     gst_on_mdr = round(mdr_fee * GST_RATE, 2)
-    refund_adjustment = o["refund_amount"] if o["refund_amount"] is not None else 0.0
+
+    if exception_type == "timing_lag_refund":
+        refund_adjustment = 0.0
+    else:
+        refund_adjustment = o["refund_amount"] if o["refund_amount"] is not None else 0.0
+
     net_amount = round(gross_amount - mdr_fee - gst_on_mdr - refund_adjustment, 2)
 
     settlement_report.append(
         {
-            "transaction_id": str(uuid.uuid4()),
+            "transaction_id": new_id(),
             "order_id": o["order_id"],
             "gross_amount": gross_amount,
             "mdr_fee": mdr_fee,
@@ -135,13 +231,24 @@ for o in orders:
         }
     )
 
+settlement_by_order_id: dict[str, list] = {}
+for s in settlement_report:
+    settlement_by_order_id.setdefault(s["order_id"], []).append(s)
+
+for oid in duplicate_ids:
+    duplicate_row = dict(settlement_by_order_id[oid][0])  # same transaction_id, verbatim copy
+    settlement_report.append(duplicate_row)
+    settlement_by_order_id[oid].append(duplicate_row)
+
 # COMMAND ----------
 
 # MAGIC %md
 # MAGIC ## Generate `bank_feed`
 # MAGIC
 # MAGIC One row per settlement batch: the lumped credit that actually lands, T+2 after
-# MAGIC the batch's order date.
+# MAGIC the batch's order date. Computed from the (possibly messy) `settlement_report`
+# MAGIC above, so a duplicate or a missing payout flows through into what the bank
+# MAGIC actually credits — exactly like production.
 
 # COMMAND ----------
 
@@ -167,29 +274,111 @@ for batch_index in batch_indices:
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Validate — prove the batch is clean and linked before writing anything
+# MAGIC ## Build `ground_truth`
+# MAGIC
+# MAGIC The answer key: one row per order, with the label and a short human-readable
+# MAGIC explanation — the same kind of reasoning the reconciliation agent itself should
+# MAGIC eventually produce on the exceptions it finds.
 
 # COMMAND ----------
 
-order_ids = {o["order_id"] for o in orders}
-settlement_order_ids = [s["order_id"] for s in settlement_report]
+
+def reasoning_for(exception_type, order, rows_for_order):
+    if exception_type == "clean_match":
+        return "Amounts reconcile exactly; no action needed."
+    if exception_type == "timing_lag_refund":
+        return (
+            f"Refund of {order['refund_amount']} issued on {order['refund_date']} "
+            "was not netted in this settlement batch; expected in the next cycle."
+        )
+    if exception_type == "mdr_rate_mismatch":
+        charged_fee = rows_for_order[0]["mdr_fee"]
+        expected_fee = round(order["order_amount"] * order["expected_mdr_rate"], 2)
+        return (
+            f"MDR fee charged ({charged_fee}) does not match the agreed rate "
+            f"(expected {expected_fee})."
+        )
+    if exception_type == "duplicate_transaction":
+        return (
+            f"Settlement contains a duplicate entry for transaction_id "
+            f"{rows_for_order[0]['transaction_id']}."
+        )
+    if exception_type == "missing_payout":
+        return "No settlement record found for this order in this batch."
+    raise ValueError(f"unknown exception_type: {exception_type}")
+
+
+ground_truth = []
+for o in orders:
+    exception_type = exception_type_by_order_id.get(o["order_id"], "clean_match")
+    rows_for_order = settlement_by_order_id.get(o["order_id"], [])
+    ground_truth.append(
+        {
+            "order_id": o["order_id"],
+            "exception_type": exception_type,
+            "expected_reasoning": reasoning_for(exception_type, o, rows_for_order),
+            "related_transaction_id": rows_for_order[0]["transaction_id"] if rows_for_order else None,
+        }
+    )
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Validate
+# MAGIC
+# MAGIC Every exception category is checked against what the raw data actually shows
+# MAGIC (not just against its own label), so a bug in the injection logic would fail
+# MAGIC loudly here rather than silently mislabeling the demo batch. The printed
+# MAGIC samples at the end are for a manual spot-check on top of that.
+
+# COMMAND ----------
 
 assert len(orders) == NUM_ORDERS, f"expected {NUM_ORDERS} orders, got {len(orders)}"
-assert len(settlement_report) == NUM_ORDERS, "settlement_report must be 1:1 with orders"
-assert set(settlement_order_ids) == order_ids, "every settlement line must reference a real order"
-assert len(set(settlement_order_ids)) == len(settlement_order_ids), "no duplicate order_id in settlement_report"
-assert len(bank_feed) == len(batch_indices), "one bank_feed row per settlement batch"
+assert len(ground_truth) == NUM_ORDERS, "ground_truth must have exactly one row per order"
 
-for row in orders:
-    assert row["order_amount"] > 0
-    if row["refund_amount"] is not None:
-        assert row["refund_amount"] <= row["order_amount"], "refund cannot exceed order amount"
-        assert row["refund_date"] is not None and row["refund_date"] >= row["order_date"]
+label_counts = Counter(g["exception_type"] for g in ground_truth)
+expected_counts = {
+    "timing_lag_refund": n_timing_lag,
+    "mdr_rate_mismatch": n_mdr_mismatch,
+    "duplicate_transaction": n_duplicate,
+    "missing_payout": n_missing_payout,
+}
+for label, expected_count in expected_counts.items():
+    actual_count = label_counts.get(label, 0)
+    assert actual_count == expected_count, f"{label}: expected {expected_count}, got {actual_count}"
 
-net_by_batch = {}
+clean_fraction = label_counts.get("clean_match", 0) / NUM_ORDERS
+assert clean_fraction >= 0.90 - 1e-9, f"expected >=90% clean_match, got {clean_fraction:.1%}"
+
+for g in ground_truth:
+    order = orders_by_id[g["order_id"]]
+    rows = settlement_by_order_id.get(g["order_id"], [])
+    label = g["exception_type"]
+
+    if label == "missing_payout":
+        assert len(rows) == 0, f"{g['order_id']} labeled missing_payout but has settlement rows"
+        continue
+    if label == "duplicate_transaction":
+        assert len(rows) == 2, f"{g['order_id']} labeled duplicate_transaction but has {len(rows)} rows"
+        assert rows[0]["transaction_id"] == rows[1]["transaction_id"]
+    else:
+        assert len(rows) == 1, f"{g['order_id']} labeled {label} but has {len(rows)} settlement rows"
+
+    if label == "timing_lag_refund":
+        assert order["refund_amount"] is not None, f"{g['order_id']} labeled timing_lag_refund but has no refund"
+        assert rows[0]["refund_adjustment"] == 0.0
+    elif label == "mdr_rate_mismatch":
+        expected_fee = round(order["order_amount"] * order["expected_mdr_rate"], 2)
+        assert abs(rows[0]["mdr_fee"] - expected_fee) > 0.01, f"{g['order_id']} labeled mdr_rate_mismatch but fee matches"
+    elif label == "clean_match":
+        expected_refund = order["refund_amount"] if order["refund_amount"] is not None else 0.0
+        expected_fee = round(order["order_amount"] * order["expected_mdr_rate"], 2)
+        assert abs(rows[0]["refund_adjustment"] - expected_refund) < 0.01
+        assert abs(rows[0]["mdr_fee"] - expected_fee) < 0.01
+
+net_by_batch: dict[int, float] = {}
 for s in settlement_report:
-    net_by_batch.setdefault(s["_batch_index"], 0.0)
-    net_by_batch[s["_batch_index"]] += s["net_amount"]
+    net_by_batch[s["_batch_index"]] = net_by_batch.get(s["_batch_index"], 0.0) + s["net_amount"]
 
 batch_index_by_id = {v: k for k, v in batch_id_by_batch.items()}
 for bf in bank_feed:
@@ -201,9 +390,21 @@ for bf in bank_feed:
     )
 
 print(
-    f"Validation passed: {len(orders)} orders, {len(settlement_report)} settlement lines, "
-    f"{len(bank_feed)} bank credits across {len(batch_indices)} batches."
+    f"Validation passed: {len(orders)} orders, {len(settlement_report)} settlement lines "
+    f"(incl. duplicates), {len(bank_feed)} bank credits.\n"
+    f"Label distribution: {dict(label_counts)} ({clean_fraction:.1%} clean)"
 )
+
+print("\nSample rows per exception category (for spot-checking):")
+for label in [
+    "clean_match",
+    "timing_lag_refund",
+    "mdr_rate_mismatch",
+    "duplicate_transaction",
+    "missing_payout",
+]:
+    for g in [row for row in ground_truth if row["exception_type"] == label][:2]:
+        print(f"  [{label}] order={g['order_id'][:8]}...  {g['expected_reasoning']}")
 
 # COMMAND ----------
 
@@ -258,6 +459,15 @@ bank_feed_schema = StructType(
     ]
 )
 
+ground_truth_schema = StructType(
+    [
+        StructField("order_id", StringType(), False),
+        StructField("exception_type", StringType(), False),
+        StructField("expected_reasoning", StringType(), False),
+        StructField("related_transaction_id", StringType(), True),
+    ]
+)
+
 
 def drop_internal_fields(rows):
     return [{k: v for k, v in row.items() if not k.startswith("_")} for row in rows]
@@ -268,14 +478,16 @@ settlement_report_df = spark.createDataFrame(
     drop_internal_fields(settlement_report), schema=settlement_report_schema
 )
 bank_feed_df = spark.createDataFrame(bank_feed, schema=bank_feed_schema)
+ground_truth_df = spark.createDataFrame(ground_truth, schema=ground_truth_schema)
 
 orders_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA_NAME}.orders")
 settlement_report_df.write.mode("overwrite").saveAsTable(
     f"{CATALOG}.{SCHEMA_NAME}.settlement_report"
 )
 bank_feed_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA_NAME}.bank_feed")
+ground_truth_df.write.mode("overwrite").saveAsTable(f"{CATALOG}.{SCHEMA_NAME}.ground_truth")
 
-print(f"Wrote orders, settlement_report, bank_feed to {CATALOG}.{SCHEMA_NAME}")
+print(f"Wrote orders, settlement_report, bank_feed, ground_truth to {CATALOG}.{SCHEMA_NAME}")
 
 # COMMAND ----------
 
@@ -288,3 +500,7 @@ display(settlement_report_df.limit(10))
 # COMMAND ----------
 
 display(bank_feed_df.limit(10))
+
+# COMMAND ----------
+
+display(ground_truth_df.filter("exception_type != 'clean_match'"))
