@@ -15,7 +15,12 @@ linked `orders` / `settlement_report` / `bank_feed` data at any scale.
 Day 2: injected realistic messiness (timing-lag refunds, MDR rate mismatches,
 duplicate transactions, missing payouts) on top of the clean batch, plus a
 `ground_truth` answer-key table, and froze a reproducible 150-row demo batch
-under `data/demo_batch/`. No matching/reconciliation engine yet — that's next.
+under `data/demo_batch/`.
+
+Day 3: a 3-tier reconciliation engine (`notebooks/02_reconcile_settlements.py`)
+that reads only `orders`/`settlement_report`/`bank_feed`, classifies every
+order as `exact` / `fuzzy` / `no_match` plus a specific category, and writes
+`reconciliation_result`. Scores 100% against `ground_truth` on the demo batch.
 
 ## Stack
 
@@ -30,12 +35,12 @@ uv sync
 ```
 
 This installs `pyspark` and `faker` locally, purely so notebook cell logic can be
-authored and sanity-checked in a plain Python REPL before running on the real
-Databricks cluster (the local `pyspark` version does not need to match the
-cluster's Databricks Runtime version — it's a dev convenience, not an execution
-target). Running a full local Spark session additionally requires a JDK, which
-isn't installed here; the pure-generation logic can still be exercised without
-one (see `notebooks/01_generate_synthetic_data.py`'s docstring-style comments).
+authored and sanity-checked before running on the real Databricks cluster (the
+local `pyspark` version does not need to match the cluster's Databricks Runtime
+version — it's a dev convenience, not an execution target). A full local Spark
+session additionally needs a JDK (Temurin 17 here) plus `JAVA_HOME`/`PYSPARK_PYTHON`
+env vars pointed at it — see `scripts/test_reconcile_local.py` for the exact
+setup and a runnable local test of the reconciliation notebook.
 
 ## Databricks setup
 
@@ -73,6 +78,35 @@ prints a sample of each category for a manual spot-check.
 or one of the four exception types, with a short explanation. It's what a real
 reconciliation engine would need to reconstruct on its own; it exists here only
 to measure that engine's accuracy later.
+
+## Reconciling settlements
+
+Run `notebooks/02_reconcile_settlements.py` on a Databricks cluster, after
+`01_generate_synthetic_data.py` has populated the tables. Widgets:
+
+| Widget         | Default       | Meaning                                              |
+|----------------|---------------|-------------------------------------------------------|
+| `catalog`      | `workspace`   | Catalog to read/write tables in                        |
+| `schema_name`  | `settletrace` | Schema the tables live under                           |
+| `tolerance`    | `0.01`        | Absolute tolerance for comparing recomputed vs. actual amounts |
+
+It reads only `orders` / `settlement_report` / `bank_feed` — never
+`ground_truth` — and recomputes what each order's settlement line *should*
+look like, comparing that against what `settlement_report` actually shows to
+classify every order:
+
+- **exact** — `clean_match`: everything ties out.
+- **fuzzy** — `mdr_rate_mismatch` or `timing_lag_refund`: linked correctly,
+  one figure doesn't tie out in a recognizable way.
+- **no_match** — `missing_payout` or `duplicate_transaction`: can't be
+  linked to settlement at all, structurally.
+
+It also cross-checks `bank_feed` against summed `settlement_report.net_amount`
+per batch — a second, independent leg of reconciliation. Writes
+`reconciliation_result` (order-level, with a `reasoning` string per row) and
+prints match-rate / exception-count summaries. The last section of the
+notebook reads `ground_truth` purely to grade the classification (100%
+accuracy on the demo batch) — that's test-only, not part of the engine.
 
 ## Demo batch
 

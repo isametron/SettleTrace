@@ -239,3 +239,100 @@ running the notebook there.
   `ground_truth.csv` (new — committed, frozen demo batch)
 - `README.md` (Day 2 status, widget table, demo-batch section)
 - `docs/day-log.md` (this section)
+
+## Day 3 — 2026-08-30: Matching logic (3-tier reconciliation)
+
+**Goal:** build the exact → fuzzy → no-match classifier as a Databricks
+notebook, get match-rate/exception-count output working end to end, and
+produce a classified output table against the fixed demo batch.
+
+### Faker install missing on serverless compute
+
+First real run of `01_generate_synthetic_data.py` on the live cluster failed
+with `ModuleNotFoundError: faker` — this workspace's serverless compute
+doesn't come with it pre-installed (unlike a classic cluster where it's easy
+to bake into a cluster-scoped library). Fixed by adding a `%pip install -q
+faker` cell followed by `dbutils.library.restartPython()` at the very top of
+the notebook. Confirmed locally (stubbed `dbutils.library.restartPython()` in
+the test harnesses) and the user confirmed it worked live afterward. Tables
+(`orders`, `settlement_report`, `bank_feed`, `ground_truth`) verified present
+under `workspace.settletrace` via `databricks tables list` — Day 2 is now
+fully closed out on the real cluster, not just locally.
+
+### `notebooks/02_reconcile_settlements.py`
+
+Reads only `orders` / `settlement_report` / `bank_feed` — never
+`ground_truth` — and classifies every order:
+
+- Recomputes the expected settlement line per order from `orders` alone
+  (expected MDR fee, GST-on-MDR, refund adjustment, net amount).
+- Counts actual settlement lines per order (`settlement_row_count`) to catch
+  structural problems before any value comparison: 0 → `missing_payout`,
+  2+ → `duplicate_transaction`.
+- For orders with exactly one settlement line, compares actual vs. expected
+  MDR fee (→ `mdr_rate_mismatch` if off) then refund adjustment (→
+  `timing_lag_refund` if off), else `clean_match`.
+- Maps category → tier: `clean_match` → **exact**; `mdr_rate_mismatch` /
+  `timing_lag_refund` → **fuzzy** (linked correctly, one figure doesn't tie
+  out); `missing_payout` / `duplicate_transaction` → **no_match** (can't be
+  linked at all, structurally).
+- Separately cross-checks `bank_feed.bank_credit_amount` against summed
+  `settlement_report.net_amount` per batch — the second, independent leg of
+  "multi-source" reconciliation (always balances in this dataset, by
+  construction — the generator derives `bank_feed` from `settlement_report`
+  directly — but the check exists for when that stops being true).
+- Writes `reconciliation_result` (order-level, with a `reasoning` string).
+- A clearly-separated final section reads `ground_truth` — the only place in
+  the notebook it's touched — purely to grade the classification. Not part
+  of the engine itself.
+
+### Local test infrastructure: installed a JDK, hit a security block, worked around it
+
+This notebook's logic is real Spark joins/aggregations (not generation logic
+that happens to touch Spark at the end, like notebook 01), so faking `spark`
+by hand wasn't a credible test. Installed Temurin 17 JDK via winget to get a
+genuine local PySpark session.
+
+Hit two environment issues along the way:
+- **`uv run python` (and the venv's `.venv/Scripts/python.exe` directly) got
+  blocked system-wide** by "An Application Control policy" immediately after
+  the JDK install — likely a reputation/freshness check on a just-created
+  executable. The underlying uv-managed interpreter
+  (`%APPDATA%\uv\python\cpython-3.12.14-windows-x86_64-none\python.exe`)
+  still ran fine. Worked around it by invoking that interpreter directly with
+  `PYTHONPATH` pointed at `.venv/Lib/site-packages`, rather than trying to
+  bypass or disable the policy itself.
+- **PySpark workers defaulted to spawning `python3`**, which doesn't exist on
+  Windows — fixed by setting `PYSPARK_PYTHON`/`PYSPARK_DRIVER_PYTHON` to the
+  real interpreter path above.
+- **Persistent catalog writes (`CREATE DATABASE`, `saveAsTable`) failed** with
+  the classic Windows `HADOOP_HOME`/`winutils.exe` error. Rather than chase
+  down a winutils install, `scripts/test_reconcile_local.py` monkeypatches
+  `spark.table()` to serve `data/demo_batch/*.csv` directly (by exact dotted
+  name) and `DataFrameWriter.saveAsTable` to capture the result in-memory —
+  sidesteps any Hadoop filesystem write, which has nothing to do with what's
+  actually being tested (the join/classification logic itself).
+
+### Result on the demo batch
+
+100% accuracy against `ground_truth` (150/150), confusion matrix perfectly
+diagonal. Match tiers: `exact=136` (90.7%), `fuzzy=10` (`mdr_rate_mismatch`=4,
+`timing_lag_refund`=6), `no_match=4` (`missing_payout`=2,
+`duplicate_transaction`=2) — auto-resolved rate (exact+fuzzy) 97.3%. Batch
+check: 6/6 balanced.
+
+### Not yet verified
+
+Same caveat as before: verified via `scripts/test_reconcile_local.py` against
+real local Spark and the frozen demo batch, not yet run on the live
+Databricks cluster. Next step is pulling this into the workspace's Git folder
+and running it there.
+
+### Files touched
+
+- `notebooks/01_generate_synthetic_data.py` (`%pip install -q faker` +
+  `dbutils.library.restartPython()` cell)
+- `notebooks/02_reconcile_settlements.py` (new)
+- `scripts/test_reconcile_local.py` (new — committed local test harness)
+- `README.md` (Day 3 status, reconciliation-notebook section, local-setup note)
+- `docs/day-log.md` (this section)
