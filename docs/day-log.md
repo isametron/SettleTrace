@@ -328,6 +328,25 @@ real local Spark and the frozen demo batch, not yet run on the live
 Databricks cluster. Next step is pulling this into the workspace's Git folder
 and running it there.
 
+### Update — confirmed live on the Databricks cluster
+
+Pulling into the Git folder hit a conflict: a `%pip install faker` cell had
+been added directly in the notebook UI at some point and never committed.
+Compared it against git (functionally identical to the already-pushed fix)
+and, with the user's go-ahead, discarded the workspace-local edit
+(`databricks repos update --dangerously-force-discard-all`) and pulled clean.
+
+Ran `02_reconcile_settlements.py` as a one-time job via `databricks jobs
+submit` (no cluster spec needed — this workspace is serverless-only) —
+SUCCESS, ~79s. Rather than trust the notebook's own print output, queried the
+live tables directly via the Statement Execution API
+(`databricks api post /api/2.0/sql/statements` against the Serverless
+Starter Warehouse — note: `databricks api ...` needs `MSYS_NO_PATHCONV=1` in
+Git Bash, or PowerShell, or the leading `/api/...` gets mangled into a
+Windows path): tier/category breakdown matched exactly, and a live join
+against `ground_truth` confirmed 150/150 (100%) independently, not just via
+the notebook's self-reported numbers.
+
 ### Files touched
 
 - `notebooks/01_generate_synthetic_data.py` (`%pip install -q faker` +
@@ -336,3 +355,109 @@ and running it there.
 - `scripts/test_reconcile_local.py` (new — committed local test harness)
 - `README.md` (Day 3 status, reconciliation-notebook section, local-setup note)
 - `docs/day-log.md` (this section)
+
+## Day 4 — 2026-08-30: Agent reasoning layer, part 1
+
+**Goal:** design the LLM prompt for exception classification (row + context
+in, cause + explanation + confidence out), get it working manually on 3-5
+sample exceptions before automating the loop.
+
+### Pivot: no Anthropic API credits — local model instead
+
+Planned to use Claude (per the project's actual framing), invoked the
+`claude-api` skill, and got as far as `client.messages.parse()` with a
+`ExceptionDiagnosis` Pydantic model (cause/explanation/confidence/
+recommended_action) before discovering the account had no API credits.
+Installed the `ant` CLI (winget `Anthropic.Ant`) as a fallback path, but the
+user then asked to pivot to a local model entirely ("Bionic AI Studio") — a
+real scope decision, not just a stopgap, confirmed explicitly with the user
+before writing any non-Anthropic code (per the claude-api skill's guardrail
+against silently rewriting Claude-targeted code for another provider).
+
+Recommended **Qwen2.5-7B-Instruct** given their hardware (RTX 5060 laptop,
+~8GB VRAM; 24GB RAM; the Ryzen AI NPU doesn't factor in since local GGUF
+runners use the GPU) — already had it loaded. Confirmed the server
+(`http://localhost:1234/v1`) via direct HTTP calls before writing any code:
+a plain chat completion worked, and a schema-constrained JSON request
+revealed a real quirk — **the server does not enforce the schema's declared
+`confidence` min/max range**, only structure; it returned `85` instead of
+`0.85` in one test despite `"minimum": 0, "maximum": 1` in the schema. Added
+a Pydantic `field_validator` to normalize any value >1 as a percentage
+rather than trust the schema alone.
+
+### Second Windows Defender block, this time on `_socket.pyd`
+
+While testing, `uv run python` (previously working) started failing again —
+not on `python.exe` this time, but importing the stdlib `socket` module
+(`_socket.pyd` under the uv-managed CPython install) tripped the same
+"Application Control policy" block seen on Day 3. Confirmed it was
+file-specific, not a system-wide anti-network policy, by testing the
+pre-existing Windows Store Python 3.13 install (`import socket` worked fine
+there). Root-fixed rather than worked around per-script: rebuilt the
+project's `.venv` against that Store Python interpreter (`uv venv --python
+<store-python-path> --clear` + `uv sync --python <same>`). **Did not**
+commit that interpreter path into `.python-version` — an early attempt via
+`uv python pin --resolved` wrote the absolute, user-specific Windows path
+into that committed file, which would break for anyone else (or a future
+reinstall); reverted it via `git checkout -- .python-version` and used
+`--python <path>` as an explicit per-command flag instead, keeping the venv
+fix local-only.
+
+### `scripts/reason_about_exceptions.py`
+
+Feeds one order per category (four exception types + one clean control,
+picked directly from `ground_truth.csv`) to the local model. System prompt
+explains the settlement-reconciliation domain and the five real categories
+plus an `other` escape hatch (so the model isn't forced into a wrong label
+when nothing fits), instructs confidence as a 0.0-1.0 decimal explicitly (on
+top of the schema, given the enforcement gap above), and asks for reasoning
+grounded in the specific numbers given rather than a restatement of the
+category name. Uses `response_format: json_schema` (verified against the
+live server via raw HTTP before wiring it into the script) rather than the
+`openai` SDK's newer `.parse()` sugar, since the exact request/response shape
+was already hand-verified to work against this specific server.
+
+Deliberately **does not** tell the model the rule engine's own category —
+the point is an independent second opinion, not the model restating a label
+it was handed.
+
+### Result: 3/5 matched ground_truth
+
+Ran for real against the live local server:
+
+- `mdr_rate_mismatch`, `missing_payout`, `clean_match` — correctly diagnosed,
+  well-grounded explanations citing the actual numbers.
+- `timing_lag_refund` — **missed**: model called it `missing_payout` at 0.95
+  confidence, despite its own explanation stating "only one settlement_report
+  line exists for this order" — an internal contradiction (it named the
+  wrong category despite correctly describing the evidence).
+- `duplicate_transaction` — **missed**: model called it `clean_match` at 1.00
+  confidence, despite its own explanation noting "both settlement_report
+  lines for this order are identical" — it saw the duplicate and didn't treat
+  the duplication itself as the anomaly.
+
+Treating this as a real, useful finding rather than a failure to paper over:
+the prompt design itself works end-to-end (schema-valid, grounded, cites real
+figures), and a small 7B local model is measurably less reliable than the
+deterministic rule engine (100% on Day 3) at catching structural cues like
+"count how many lines exist" — exactly the kind of gap a real project should
+surface, not hide. Worth revisiting with a larger local model (Qwen2.5-14B)
+or a hosted model once credits exist, to see whether the same prompt does
+better.
+
+### Not yet done
+
+- Only 5 hand-picked orders tested, not automated across the full batch —
+  that's explicitly Day 4 part 2 / a later day per the plan.
+- Two of five categories showed a real accuracy gap at this model size,
+  un-investigated beyond noting it.
+- No Claude API path actually exercised end-to-end (blocked on credits) —
+  the `ant` CLI is installed and unauthenticated, ready whenever credits
+  exist.
+
+### Files touched
+
+- `pyproject.toml` (dependency swap: `anthropic`+`pydantic` → `openai`+`pydantic`)
+- `scripts/reason_about_exceptions.py` (new)
+- `README.md` (Day 4 status, Stack, new "LLM reasoning layer" section)
+- `docs/day-log.md` (this section, plus the Day 3 live-cluster update above)

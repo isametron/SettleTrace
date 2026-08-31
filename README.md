@@ -22,9 +22,18 @@ that reads only `orders`/`settlement_report`/`bank_feed`, classifies every
 order as `exact` / `fuzzy` / `no_match` plus a specific category, and writes
 `reconciliation_result`. Scores 100% against `ground_truth` on the demo batch.
 
+Day 4 (part 1): a prototype LLM reasoning layer (`scripts/reason_about_exceptions.py`)
+that independently diagnoses cause + explanation + confidence per order,
+without seeing the rule engine's own category. Tested manually on 5 sample
+orders against a local model — see the widget/usage section below for the
+result and what it means.
+
 ## Stack
 
 - Databricks + PySpark for batch reconciliation
+- An LLM reasoning layer for exception explanation — currently a local model
+  (Qwen2.5-7B-Instruct via an OpenAI-compatible local server) rather than a
+  hosted API
 - `uv` for local Python env/dependency management
 - Prophet, later, for a cash-forecasting angle
 
@@ -123,3 +132,34 @@ This runs the notebook's own generation logic locally (stubbing the
 Databricks-injected `dbutils`/`spark`/`display`), so there's one source of
 truth for the generation logic — it isn't duplicated between the notebook and
 the export script.
+
+## LLM reasoning layer (prototype)
+
+`scripts/reason_about_exceptions.py` feeds one order per category (four
+exception types + one clean control) from the demo batch to a local model,
+asking it to *independently* diagnose the cause — without being told the
+rule engine's own category — and return `cause` / `explanation` /
+`confidence` / `recommended_action` as structured JSON.
+
+It targets an OpenAI-compatible local server (tested against Bionic AI
+Studio running `qwen2.5-7b-instruct`, default `http://localhost:1234/v1`) —
+edit `LOCAL_MODEL_BASE_URL` / `LOCAL_MODEL_NAME` at the top of the script to
+point at a different one. Run with:
+
+```
+uv run python scripts/reason_about_exceptions.py
+```
+
+**Result on the 5 sample orders: 3/5 matched `ground_truth`.** Correctly
+diagnosed `mdr_rate_mismatch`, `missing_payout`, and `clean_match`. Missed
+`timing_lag_refund` (called it `missing_payout`, despite its own explanation
+noting a settlement line existed) and `duplicate_transaction` (called it
+`clean_match` even after describing both identical settlement lines in its
+own explanation). This is an honest result for a small local model, not a
+bug — it validates the prompt design works end-to-end (grounded, schema-valid
+reasoning) while showing accuracy on subtler structural cues (like "count the
+lines") is a real limitation at this model size. A caveat worth knowing: this
+local server did not actually enforce the JSON schema's `confidence` range —
+it returned a 0–100 value once during testing despite the schema declaring
+0–1 — so the response is normalized defensively in code rather than trusted
+outright.
