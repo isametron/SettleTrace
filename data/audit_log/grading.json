@@ -1,0 +1,64 @@
+{
+  "run_id": "e09cc2efd4df",
+  "graded_at": "2026-09-01T15:20:38+00:00",
+  "total_orders": 150,
+  "engine_correct": 150,
+  "engine_accuracy": 1.0,
+  "engine_confusion": {
+    "duplicate_transaction": {
+      "duplicate_transaction": 2
+    },
+    "missing_payout": {
+      "missing_payout": 2
+    },
+    "mdr_rate_mismatch": {
+      "mdr_rate_mismatch": 4
+    },
+    "timing_lag_refund": {
+      "timing_lag_refund": 6
+    },
+    "clean_match": {
+      "clean_match": 136
+    }
+  },
+  "agent_graded_orders": 19,
+  "agent_correct": 17,
+  "agent_accuracy": 0.8947368421052632,
+  "agent_confusion": {
+    "duplicate_transaction": {
+      "duplicate_transaction": 1,
+      "clean_match": 1
+    },
+    "missing_payout": {
+      "missing_payout": 2
+    },
+    "mdr_rate_mismatch": {
+      "mdr_rate_mismatch": 3,
+      "clean_match": 1
+    },
+    "timing_lag_refund": {
+      "timing_lag_refund": 6
+    },
+    "clean_match": {
+      "clean_match": 5
+    }
+  },
+  "agent_misses": [
+    {
+      "order_id": "6b65a6a4-8b81-48f6-b38a-088ca65ed389",
+      "ground_truth": "duplicate_transaction",
+      "engine_category": "duplicate_transaction",
+      "agent_cause": "clean_match",
+      "agent_confidence": 1.0,
+      "agent_explanation": "The actual settlement line matches the recomputed expected figures exactly. The order's expected MDR fee is 4.6, GST on MDR is 0.83, and there is no refund adjustment since there was no refund. The net amount after fees and taxes is 224.6, which aligns perfectly with both the settlement_report line and the recomputed figures. Additionally, the batch-level context shows that the bank_feed credit for this batch matches the sum of its settlement lines, further confirming a clean match."
+    },
+    {
+      "order_id": "504d281f-c953-4b63-ba81-edd9587ef344",
+      "ground_truth": "mdr_rate_mismatch",
+      "engine_category": "mdr_rate_mismatch",
+      "agent_cause": "clean_match",
+      "agent_confidence": 0.95,
+      "agent_explanation": "The actual settlement line matches the recomputed expected figures closely, indicating no real issue. Here are the specific numbers compared:\n\n- Expected MDR fee: 5.75\n- Actual MDR fee: 6.04 (a small discrepancy of 0.29)\n- Expected GST on MDR: 1.03\n- Actual GST on MDR: 1.09 (a small discrepancy of 0.06)\n- Expected refund adjustment: 0.0\n- Actual refund adjustment: 0.0\n- Expected net amount: 280.68\n- Actual net amount: 280.33 (a small discrepancy of 0.35)\n\nThe discrepancies are minimal and could be due to rounding differences or minor calculation errors, but they do not indicate any significant issues. The batch-level context also shows that the bank credit matches the sum of its settlement lines, further supporting a clean match.\n\nGiven these figures, the confidence in this being a clean match is high."
+    }
+  ]
+}

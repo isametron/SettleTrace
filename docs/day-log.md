@@ -461,3 +461,268 @@ better.
 - `scripts/reason_about_exceptions.py` (new)
 - `README.md` (Day 4 status, Stack, new "LLM reasoning layer" section)
 - `docs/day-log.md` (this section, plus the Day 3 live-cluster update above)
+
+## Day 5 — 2026-09-01: Agent reasoning layer part 2 + audit trail
+
+**Goal:** automate the reasoning loop across every flagged exception, build the
+audit trail, and get the full pipeline running start to finish —
+data → match → exception reasoning → audit log.
+
+### Refactor first: three scripts were about to become three copies
+
+Day 4's prototype held the prompt, response schema, and case-builder inline;
+Day 3's test harness held the demo-batch Spark schemas inline. Automating the
+loop meant a second copy of both, so they were extracted before anything new
+was written:
+
+- `scripts/reasoning_agent.py` — prompt, JSON schema, `ExceptionDiagnosis`,
+  `build_case`, and a `ReasoningAgent` wrapper. The prompt text is
+  **byte-for-byte the Day 4 prompt** on purpose: Day 5's job was to measure it
+  at scale, not to quietly tune it and lose comparability.
+- `scripts/local_spark_harness.py` — demo-batch schemas, the `dbutils`/`spark`
+  stubs, and the notebook-exec shim.
+
+`scripts/reason_about_exceptions.py` and `scripts/test_reconcile_local.py` now
+import from these instead of carrying their own copies. Re-ran the Day 3 test
+after the refactor: still 150/150, confirming the extraction was behaviour-
+preserving before building on top of it.
+
+### `scripts/run_pipeline.py` — the four stages
+
+Runs data → match → reason → audit in one command. Stage 2 exec's the *real*
+`notebooks/02_reconcile_settlements.py` under local Spark rather than
+reimplementing it, the same single-source-of-truth trick `export_demo_batch.py`
+uses for notebook 01.
+
+Two deliberate choices in stage 3:
+
+- **Clean controls.** Alongside the 14 flagged orders, a deterministic seeded
+  sample of 5 *clean* orders also goes to the agent. Without them the run only
+  measures whether the agent can name an exception it was already pointed at;
+  with them it also measures whether it invents exceptions that aren't there.
+- **`temperature=0`.** Day 4 left the server default. See the reproducibility
+  finding below for how much this actually bought.
+
+### `scripts/audit_trail.py` — the audit record
+
+One record per order (all 150, not just the exceptions), carrying: the engine's
+tier/category/reasoning **plus the figures it compared** (a bare category ages
+badly — nobody can re-check it six months later); the agent's cause,
+explanation, confidence and recommended action; model name, prompt hash, and a
+fingerprint of the exact evidence shown to the model; the engine-vs-agent
+adjudication; and the governance fields.
+
+The governance stance, encoded rather than documented:
+
+- Engine is **authoritative**, agent is **advisory** and never overrides. Not
+  modesty — Day 4 measured the 7B model below the engine, so letting it override
+  would lower accuracy.
+- **Disagreement escalates** to human review rather than resolving toward
+  either side.
+- **`action_taken: "none"` and `autonomous_action_taken: false` on every
+  record**, plus a run-level count, so a reviewer reading any single line
+  doesn't have to take the summary's word for it.
+
+`ground_truth` is kept *out* of the audit schema entirely — accuracy grading
+goes to a separate `grading.json`, preserving the boundary notebook 02 already
+draws with its quarantined accuracy cell.
+
+### Result: engine 150/150, agent 17/19
+
+Full run: 14 flagged + 5 controls diagnosed, 150 audit records written, 14
+queued for human review, 136 auto-cleared, **0 autonomous actions**. ~75s warm
+(the committed run reports 157s — its first model call paid a ~69s cold load).
+
+- **Engine 150/150 (100%)** — unchanged.
+- **Agent 17/19 (89.5%)**, up from 3/5 on Day 4's hand-picked sample.
+- **Controls 5/5** — no invented exceptions on clean orders.
+
+Both misses were false negatives (real exception called `clean_match`), both on
+small-value orders:
+
+- `mdr_rate_mismatch` (504d281f): the model **correctly listed** expected MDR
+  5.75 vs actual 6.04, then dismissed it as "minimal… could be due to rounding"
+  at 0.95 confidence. A materiality error, and a genuinely interesting one:
+  ₹0.29 is small in absolute terms but ~5% off the agreed rate. The engine's
+  fixed 0.01 tolerance has no opinion about whether a number "looks small".
+- `duplicate_transaction` (6b65a6a4): described "the actual settlement line" in
+  the singular despite being shown two. Same structural counting blind spot as
+  Day 4, still present at `temperature=0`.
+
+Checked Day 4's five specific orders inside this run: the `timing_lag_refund`
+one it missed on Day 4 is now correct, the `duplicate_transaction` one still
+fails. Two things changed since Day 4 though (temperature *and* sample size), so
+that improvement is **not** cleanly attributable to either — an A/B holding
+sample fixed would be needed to say more, and wasn't run.
+
+### Finding: confidence is not a usable routing signal
+
+Mean agent confidence across the run was 0.961 — and the two wrong answers came
+in at **0.95 and 1.00**, at or above that mean. The model is confidently wrong
+in exactly the cases it gets wrong, so confidence carries no signal about
+correctness here.
+
+This retroactively justifies a design choice that had been made on general
+caution: every engine-flagged order goes to human review *regardless* of what
+the agent's confidence says, and the agent can never clear work — only add
+doubt. Had confidence been used as an auto-clear threshold (the obvious
+"efficiency" feature to build next), both misses would have sailed through at
+≥0.95. Worth remembering before anyone proposes that feature.
+
+### Finding: `temperature=0` does not make the run reproducible
+
+Worth recording because it contradicts what was initially written in the code.
+Ran the identical 19 cases twice, confirming via the stored case fingerprints
+that the inputs were byte-identical:
+
+- **cause: 0/19 changed** — the field that drives routing is stable.
+- **explanation prose: 11/19 differed.** `confidence` moved on 2 (1.0→0.95,
+  0.95→0.85).
+
+So the server is nondeterministic below the sampler (batching/kernel
+non-associativity), and `temperature=0` buys stable classification, not
+reproducibility. The docstring claiming otherwise was corrected to state the
+measurement.
+
+This turned out to be the strongest architectural argument for the audit trail
+existing at all: **an explanation that can't be reproduced by re-running is only
+preserved if it was written down when it was made.** The log isn't paperwork
+about the reasoning — it's the only copy of it.
+
+### Day 5, part 2 — onto Databricks
+
+The above ran locally only, because the reasoning stage talked to a model server
+on `localhost` that a cluster can't reach. That was a real blocker, not a
+preference, so the next move was to remove it.
+
+**The workspace already had what was needed.** `databricks serving-endpoints
+list` showed 11 Foundation Model API endpoints live and `READY` — including
+`databricks-meta-llama-3-3-70b-instruct`, `databricks-qwen35-122b-a10b` and
+`databricks-gpt-oss-120b`. Pay-per-token, reachable from the cluster, no
+deployment needed. The Day 4 pivot to a local model had been driven by the
+Anthropic account having no credits; nobody had checked whether Databricks
+itself served models.
+
+**Verified the hard dependency before building on it.** The whole prompt design
+rests on `response_format: json_schema`, so that was tested first, on the case
+the local 7B model got *wrong* (the MDR mismatch it dismissed as rounding). Two
+findings:
+
+- The CLI's `databricks serving-endpoints query` **silently drops
+  `response_format`** ("Warning: unknown field") — a CLI schema limitation, not
+  an endpoint one. Testing through the CLI alone would have wrongly concluded
+  structured output was unsupported.
+- Through the OpenAI-compatible protocol it works. Four of five candidate
+  endpoints returned schema-valid JSON and **all four diagnosed correctly** the
+  case the 7B model missed. `databricks-gpt-oss-120b` returns `content` as a
+  list of blocks rather than a string, so `json.loads` chokes on it — handled
+  defensively in `extract_message_content`, but not made the default.
+
+**One code path, two backends.** `ReasoningAgent(backend="databricks"|"local")`.
+Databricks Foundation Model APIs speak the OpenAI chat protocol at
+`<host>/serving-endpoints`, so only the base URL and credential change — prompt,
+schema and parsing are identical, which is what makes the two backends
+measurable against each other. Auth resolves through `WorkspaceClient`: the
+notebook's own identity on a cluster, the CLI profile locally, no secrets in the
+notebook. (`WorkspaceClient.serving_endpoints.get_open_ai_client()` is deprecated
+and pulls in `httpx`; building the `OpenAI` client from host + token directly
+avoids the dependency and works in both places.)
+
+**`notebooks/03_reason_and_audit.py`** is stages 3 and 4 as a real Databricks
+notebook, writing the `audit_log` **Delta table** — closing the "JSONL, not
+Delta" gap noted above. It imports the prompt and audit schema from `scripts/`
+rather than restating them, so the cluster and the local runner can't drift.
+Two wrinkles worth recording:
+
+- `build_case` was written against the demo-batch CSVs where every field is a
+  string; Delta returns typed values. Normalising the rows at the notebook
+  boundary (rather than loosening `build_case`) keeps both paths feeding the
+  model byte-identical prompts.
+- The audit table uses an **explicit** schema, not inference: most agent columns
+  are null for the ~90% of orders that match cleanly, and Spark would infer
+  those as void and fail the write on a run where nothing was flagged.
+
+**Tested locally first** (`scripts/test_notebook03_local.py`) by chaining
+notebook 02 → notebook 03 under real local Spark, asserting the governance
+invariants hold on the resulting table. Then synced to the workspace with
+`databricks sync` (deliberately *not* a git push — that's the user's call) and
+submitted via `databricks jobs submit`: **SUCCESS**.
+
+**Verified by querying the table, not by trusting the notebook's print output**
+— same discipline as Day 3:
+
+| Check | Result |
+|-------|--------|
+| `audit_log` rows | 150 |
+| Review queue | 14 `needs_human_review`, 136 `auto_cleared` |
+| `action_taken` distinct values | 1 (`none`) |
+| `SUM(autonomous_action_taken)` | **0** |
+| Engine vs. agent on flagged | 14 agree, 0 disagree |
+| Agent vs. `ground_truth` (test-only) | **19/19 (100%)** |
+| Provenance | `databricks-meta-llama-3-3-70b-instruct`, prompt `e07e929411a5` |
+
+**The 70B model fixed both failure modes.** The `duplicate_transaction`
+structural miss — wrong on Day 4 *and* on Day 5's local run — and the
+`mdr_rate_mismatch` materiality error both came out correct. Same prompt, same
+orders, bigger model. That reframes the Day 4/5 findings: they were a
+7B-parameter limitation, not a prompt defect.
+
+Note this does **not** retire the governance design. The agent agreeing with the
+engine 14/14 is a result from one run on one 150-row batch; the confidence
+finding above still stands, and a model that is right today is not a reason to
+let it act tomorrow.
+
+### Finding: the frozen demo batch and the cluster tables have drifted
+
+Caught while cross-checking the cluster's `duplicate_transaction` orders against
+the local ones. `data/demo_batch/` and `workspace.settletrace` were both
+generated at `num_orders=150, seed=42` and are structurally identical — same
+136/6/4/2/2 category split — but **4 of 150 `order_id`s differ**, and one of the
+four is a `duplicate_transaction` order. The differing rows are the first four
+orders of the batch (all dated 2026-01-05); rows 4 onward match exactly.
+
+That signature rules out a simple RNG-stream offset (which would change
+everything after the divergence point). Plausible causes not yet tested: a
+`faker` version difference changing how many draws are taken from the shared
+`random` stream, a Python version difference (local 3.13 vs serverless 3.11/3.12)
+in `random.sample`/`shuffle` internals, or the cluster tables having been written
+by an older commit of notebook 01.
+
+This is a **third** determinism leak, after the `uuid.uuid4()` and `set()`
+-iteration bugs fixed on Day 2 — the "frozen, reproducible demo batch" premise
+is weaker than the Day 2 entry claims. It means local and cluster runs grade
+against slightly different answer keys and aren't order-for-order comparable,
+even though both currently score identically. Left un-root-caused rather than
+papered over by regenerating one side to match the other; tracked as a
+follow-up.
+
+### Known gaps
+
+- The batch-drift finding immediately above is diagnosed but not fixed.
+- The Day 5 local-model failure modes are fixed *by using a larger model*, not
+  by understanding the prompt's role in them. The prompt was deliberately left
+  byte-identical throughout so the model comparison stayed clean.
+- `databricks-gpt-oss-120b` (the largest reasoning endpoint available) is
+  handled but untested end-to-end.
+- The repo reached the cluster via `databricks sync` to
+  `/Users/<user>/SettleTrace-dev`, not through the workspace Git folder. The Git
+  folder still points at the last pushed commit, so a `git push` is needed
+  before the workspace copy and the repo agree.
+- Nothing is committed yet — the whole of Day 5 is uncommitted working tree.
+
+### Files touched
+
+- `notebooks/03_reason_and_audit.py` (new — reasoning + audit as a Databricks
+  notebook, writing the `audit_log` Delta table)
+- `scripts/reasoning_agent.py` (new — shared reasoning layer, two backends)
+- `scripts/local_spark_harness.py` (new — extracted shared Spark harness)
+- `scripts/audit_trail.py` (new — audit record/summary/grading schemas + writers)
+- `scripts/run_pipeline.py` (new — the four-stage local runner)
+- `scripts/test_notebook03_local.py` (new — chains notebooks 02→03 locally and
+  asserts the governance invariants)
+- `scripts/reason_about_exceptions.py` (now imports the shared reasoning layer)
+- `scripts/test_reconcile_local.py` (now imports the shared Spark harness)
+- `pyproject.toml` (added `databricks-sdk`)
+- `data/audit_log/*` (new — audit trail from the canonical local run)
+- `README.md` (Day 5 status, Databricks notebook + local pipeline sections)
+- `docs/day-log.md` (this section)

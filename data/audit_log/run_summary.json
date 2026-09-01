@@ -1,0 +1,43 @@
+{
+  "schema_version": "1.0",
+  "run_id": "e09cc2efd4df",
+  "run_started_at": "2026-09-01T15:18:01+00:00",
+  "run_completed_at": "2026-09-01T15:20:38+00:00",
+  "duration_seconds": 156.6,
+  "data_source": "data/demo_batch (frozen, num_orders=150 seed=42)",
+  "total_orders": 150,
+  "tier_counts": {
+    "exact": 136,
+    "no_match": 4,
+    "fuzzy": 10
+  },
+  "category_counts": {
+    "clean_match": 136,
+    "duplicate_transaction": 2,
+    "mdr_rate_mismatch": 4,
+    "timing_lag_refund": 6,
+    "missing_payout": 2
+  },
+  "exact_match_rate": 0.9067,
+  "auto_resolved_rate": 0.9733,
+  "batches_checked": 6,
+  "batches_balanced": 6,
+  "flagged_orders": 14,
+  "agent_invoked_count": 19,
+  "agent_failed_count": 0,
+  "control_sample_count": 5,
+  "agent_model": "qwen2.5-7b-instruct",
+  "agent_prompt_version": "e07e929411a5",
+  "agent_temperature": 0.0,
+  "agent_total_latency_ms": 134820,
+  "agreement_on_flagged": {
+    "agree": 12,
+    "disagree": 2
+  },
+  "mean_agent_confidence": 0.961,
+  "orders_needing_human_review": 14,
+  "orders_auto_cleared": 136,
+  "autonomous_actions_taken": 0,
+  "action_policy": "advisory_only",
+  "action_note": "SettleTrace produced a classification and, where applicable, a diagnosis and recommendation. No autonomous action was taken: no ledger entry, payout, refund, settlement correction, or write-back to any source system was performed. Any corrective action requires human review and approval."
+}
