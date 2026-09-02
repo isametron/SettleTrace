@@ -46,6 +46,7 @@ See "Full pipeline" below.
 - An LLM reasoning layer for exception explanation, running on Databricks
   Foundation Model APIs (`databricks-meta-llama-3-3-70b-instruct` by default),
   with an optional local-model backend for offline iteration
+- A Streamlit dashboard over the audit trail (`dashboard/app.py`)
 - `uv` for local Python env/dependency management
 - Prophet, later, for a cash-forecasting angle
 
@@ -336,7 +337,47 @@ drives routing without making a run reproducible. That is exactly why the audit
 trail stores each explanation verbatim instead of regenerating it on demand —
 re-running tomorrow produces different words for the same order.
 
-### Known gap: the frozen batch and the cluster tables have drifted
+### Dashboard (`dashboard/app.py`)
+
+The presentation layer — a Streamlit app over the audit trail.
+
+```bash
+.venv\Scripts\streamlit.exe run dashboard/app.py
+```
+
+It reads the **audit log**, not the raw tables: that artefact already carries the
+engine verdict, the evidence figures, the agent's diagnosis and the governance
+fields, so the dashboard is a view over one source rather than a second place
+where reconciliation logic lives. Two sources, switchable in the sidebar:
+
+- **Local run** (default) — the committed `data/audit_log/audit_log.jsonl`.
+  Instant and offline; use this for a live demo.
+- **Databricks (live)** — queries the `audit_log` Delta table. A stopped SQL
+  warehouse takes ~30s to wake, which is not something to discover on stage.
+
+What's on screen:
+
+| Region | Contents |
+|--------|----------|
+| KPI row | Auto-cleared %, value cleared, value held, orders needing review, and **autonomous actions: 0** as a headline figure |
+| Settlement value | One stacked proportion bar — cleared vs held, with exact ₹ in the legend |
+| Exceptions by type | Horizontal bar, count and ₹ held per category (clean matches excluded — at 136 of 150 they flatten every exception bar) |
+| Exception queue | One card per held order: the engine's reasoning and figures beside the agent's explanation, confidence and recommendation, an agree/disagree chip, and `action_taken: none` on every card |
+| Table view | The WCAG-clean twin of every chart, with CSV export |
+
+Filters (category, tier, review status, minimum value) sit in one sidebar panel
+and scope the whole page, charts and queue alike.
+
+The card worth opening in a demo is order `504d281f`: the engine flags an MDR
+mismatch, the agent calls it clean at 0.95 confidence, and the card puts the
+expected-vs-actual figures next to the agent's own words dismissing a ~5% rate
+error as "minimal… could be due to rounding". The disagreement, the evidence,
+and the fact that nothing was actioned are all visible at once.
+
+Note that agent explanations are model-written text rendered into an HTML page,
+so they are escaped before rendering rather than trusted.
+
+## Known gap: the frozen batch and the cluster tables have drifted
 
 Measured 2026-09-01: `data/demo_batch/` and the Delta tables in
 `workspace.settletrace` were both generated at `num_orders=150, seed=42`, and are

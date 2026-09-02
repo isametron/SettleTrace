@@ -710,6 +710,97 @@ follow-up.
   before the workspace copy and the repo agree.
 - Nothing is committed yet — the whole of Day 5 is uncommitted working tree.
 
+## Day 6 — 2026-09-03: Dashboard / presentation layer
+
+**Goal:** a Streamlit dashboard showing match rate %, ₹ cleared vs flagged, and
+the exception list with agent explanations — clean enough to demo live.
+
+### What it reads
+
+`dashboard/app.py` reads the **audit trail**, not the raw tables. That falls out
+of Day 5's design: the audit log already carries the engine verdict, the evidence
+figures, the agent's diagnosis, the adjudication, and the governance fields, so
+the dashboard is a view over one artefact rather than a second place where
+reconciliation logic gets re-implemented.
+
+Two sources, switchable in the sidebar:
+
+- **Local run** — the committed `data/audit_log/audit_log.jsonl`. Instant, works
+  offline, and is what a live demo should use.
+- **Databricks (live)** — queries the `audit_log` Delta table through the SQL
+  Statement Execution API.
+
+Local is the default deliberately: a stopped SQL warehouse takes ~30s to wake,
+and that is not a thing to discover in front of judges.
+
+### Design
+
+Built dark first, then redone light against the BI reference the user pointed
+at: white cards on a light grey plane, headline figures large and light-weight
+in the sequential blue, labels above them in plain sentence case, generous
+whitespace. Layout follows the same references — KPI row across the top, filters
+down the left, detail below. Charts were built against the `dataviz` skill's
+method rather than by taste:
+
+- **KPI row is stat tiles, not charts.** Five headline numbers, including
+  **Autonomous actions: 0** as a first-class figure rather than a footnote — and
+  the only one in the status-good green, since that figure encodes a safety
+  state rather than a series.
+- **Value cleared vs held** is one stacked proportion bar, not a two-slice pie.
+  The large segment is direct-labelled (91.6%); the ~8% held sliver is too narrow
+  for a label that wouldn't be clipped, so its value is carried by the legend and
+  the tooltip.
+- **Exceptions by type** is a horizontal bar in a single hue. Colouring each bar
+  darker-where-bigger would double-encode length as hue on nominal categories.
+- **Clean matches are excluded from that chart.** At 136 of 150 they compressed
+  every exception bar to 3-8px. The clean count is already the KPI row's
+  headline; the chart's job is the 14 orders that need a person.
+- Every chart has a table-view twin (expander at the bottom, with CSV export).
+
+### The exception queue
+
+The part that actually carries the project. One card per held order, sorted by
+value, each showing the rule engine and the agent **side by side**:
+
+- Engine: its reasoning plus the figures it compared, with any actual that
+  differs from expected rendered in the critical colour.
+- Agent: its explanation, confidence, and recommended action.
+- A chip saying whether the two agree; where they don't, the card says so
+  explicitly rather than picking a winner.
+- A footer on every card: `Action taken: none · autonomous_action_taken = false`.
+
+The demo case is order `504d281f`: the engine flags an MDR mismatch, the agent
+calls it clean at 0.95 confidence, and the card shows the expected-vs-actual
+figures next to the agent's own words dismissing a ~5% rate error as "minimal…
+could be due to rounding". The disagreement, the evidence, and the fact that
+nothing was actioned are all visible in one card.
+
+### Escaping model output
+
+The agent's explanation is model-written text being rendered into a page with
+`unsafe_allow_html=True`, which would let anything the model emitted execute as
+markup in the reviewer's browser. It is escaped through a `quote_html` helper
+before rendering. This also fixed a cosmetic bug — Streamlit was parsing the
+model's `- ` lines as a markdown list and hoisting them out of the styled quote
+block, so the agent column lost the rule the engine column had.
+
+### Known gaps
+
+- The committed `data/audit_log/` artefact is the **local 7B run**, so the
+  dashboard's default view shows `qwen2.5-7b-instruct` as the model and includes
+  the two disagreements. That is the better demo (an empty disagreement state
+  would be less informative) but it does not match the Databricks run, which
+  agreed 14/14. Switching the source to Databricks shows the 70B numbers.
+- No automated test for the dashboard; it was verified by rendering and reading
+  it, plus a DOM check that both segments of the value bar actually draw.
+
+### Files touched
+
+- `dashboard/app.py` (new)
+- `.streamlit/config.toml` (new — light theme matching the chart palette)
+- `pyproject.toml` / `uv.lock` (added `streamlit`, `plotly`)
+- `README.md`, `docs/day-log.md` (this section)
+
 ### Files touched
 
 - `notebooks/03_reason_and_audit.py` (new — reasoning + audit as a Databricks
