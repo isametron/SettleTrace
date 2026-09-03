@@ -11,12 +11,17 @@
 # MAGIC everything above that point is what a real engine would have to do blind.
 # MAGIC
 # MAGIC Tiers:
-# MAGIC - **exact** — the order has one settlement line and every recomputed figure
-# MAGIC   (MDR fee, refund adjustment, net amount) ties out within tolerance.
+# MAGIC - **exact** — the order has one settlement line and the full settlement
+# MAGIC   identity ties out within tolerance:
+# MAGIC   `net_amount == order_amount - mdr_fee - gst_on_mdr - refund_adjustment`,
+# MAGIC   with the fee and GST also matching the agreed rate. All four figures are
+# MAGIC   compared, not just the two that have exception types attached to them.
 # MAGIC - **fuzzy** — the order has one settlement line, it's linked correctly, but a
-# MAGIC   specific figure doesn't tie out in a recognizable way: `mdr_rate_mismatch`
-# MAGIC   (fee doesn't match the agreed rate) or `timing_lag_refund` (order has a
-# MAGIC   refund the settlement line doesn't reflect).
+# MAGIC   specific figure doesn't tie out: `mdr_rate_mismatch` (fee doesn't match the
+# MAGIC   agreed rate), `timing_lag_refund` (order has a refund the settlement line
+# MAGIC   doesn't reflect), or `unexplained_value_break` (fee and refund both tie out
+# MAGIC   but the settlement identity still doesn't hold — a real break with no known
+# MAGIC   cause, which would otherwise have passed as a clean match).
 # MAGIC - **no_match** — the order can't be linked to settlement at all, structurally:
 # MAGIC   `missing_payout` (zero settlement lines) or `duplicate_transaction` (two or
 # MAGIC   more lines for the same order/transaction).
@@ -39,6 +44,26 @@ CATALOG = dbutils.widgets.get("catalog")
 SCHEMA_NAME = dbutils.widgets.get("schema_name")
 TOLERANCE = float(dbutils.widgets.get("tolerance"))
 GST_RATE = 0.18
+
+
+def breaks_tolerance(actual, expected):
+    """True when two rupee figures differ by *more* than TOLERANCE.
+
+    The delta is rounded to paise before comparing, for two reasons that both
+    bite in practice:
+
+    1. Floating point. `17.51 - 17.5` is 0.010000000000001563, which is
+       strictly greater than a 0.01 tolerance, so a difference of exactly one
+       paisa would flag as a break without this.
+    2. Rounding conventions genuinely differ across the pipeline. Python's
+       `round()` is banker's rounding (HALF_EVEN) and Spark's `F.round()` is
+       HALF_UP, so the generator and this engine can legitimately land one
+       paisa apart on the same arithmetic -- three orders in the 150-order demo
+       batch do exactly that on `gst_on_mdr`. A one-paisa rounding convention
+       gap is precisely what a one-paisa tolerance exists to absorb; it is not
+       a settlement break, and treating it as one would bury the real ones.
+    """
+    return F.round(F.abs(actual - expected), 2) > TOLERANCE
 
 # COMMAND ----------
 
@@ -131,18 +156,30 @@ classified = joined.withColumn(
     F.when(F.col("settlement_row_count") == 0, F.lit("missing_payout"))
     .when(F.col("settlement_row_count") >= 2, F.lit("duplicate_transaction"))
     .when(
-        F.abs(F.col("mdr_fee") - F.col("expected_mdr_fee")) > TOLERANCE,
+        breaks_tolerance(F.col("mdr_fee"), F.col("expected_mdr_fee")),
         F.lit("mdr_rate_mismatch"),
     )
     .when(
-        F.abs(F.col("refund_adjustment") - F.col("expected_refund_adjustment")) > TOLERANCE,
+        breaks_tolerance(F.col("refund_adjustment"), F.col("expected_refund_adjustment")),
         F.lit("timing_lag_refund"),
+    )
+    # Fee and refund both tie out, so no known exception type explains this —
+    # but the identity still has to hold on GST and on the net itself.
+    .when(
+        breaks_tolerance(F.col("gst_on_mdr"), F.col("expected_gst_on_mdr"))
+        | breaks_tolerance(F.col("net_amount"), F.col("expected_net_amount")),
+        F.lit("unexplained_value_break"),
     )
     .otherwise(F.lit("clean_match")),
 ).withColumn(
     "match_tier",
     F.when(F.col("category") == "clean_match", F.lit("exact"))
-    .when(F.col("category").isin("mdr_rate_mismatch", "timing_lag_refund"), F.lit("fuzzy"))
+    .when(
+        F.col("category").isin(
+            "mdr_rate_mismatch", "timing_lag_refund", "unexplained_value_break"
+        ),
+        F.lit("fuzzy"),
+    )
     .otherwise(F.lit("no_match")),
 ).withColumn(
     "reasoning",
@@ -179,6 +216,21 @@ classified = joined.withColumn(
     .when(
         F.col("category") == "missing_payout",
         F.lit("No settlement record found for this order in this batch."),
+    )
+    .when(
+        F.col("category") == "unexplained_value_break",
+        F.concat(
+            F.lit("MDR fee and refund adjustment both tie out, but the settlement identity "),
+            F.lit("does not: expected gst_on_mdr "),
+            F.col("expected_gst_on_mdr").cast("string"),
+            F.lit(" / net_amount "),
+            F.col("expected_net_amount").cast("string"),
+            F.lit(", actual gst_on_mdr "),
+            F.col("gst_on_mdr").cast("string"),
+            F.lit(" / net_amount "),
+            F.col("net_amount").cast("string"),
+            F.lit(". No known exception type explains this — investigate."),
+        ),
     )
     .otherwise(F.lit("")),
 )
