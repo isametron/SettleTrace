@@ -28,20 +28,12 @@
 
 # COMMAND ----------
 
-# MAGIC %pip install -q faker
-
-# COMMAND ----------
-
-dbutils.library.restartPython()
-
-# COMMAND ----------
-
+import hashlib
 import random
 import uuid
 from collections import Counter
 from datetime import date, timedelta
 
-from faker import Faker
 from pyspark.sql.types import (
     DateType,
     DoubleType,
@@ -78,16 +70,23 @@ GST_RATE = 0.18
 REFUND_PROBABILITY = 0.15
 SETTLEMENT_LAG_DAYS = 2
 
-random.seed(SEED)
-fake = Faker()
-Faker.seed(SEED)
+# A private generator, not `random.seed()` + the module-level `random.*`
+# functions. The module-level ones share one process-global Mersenne Twister
+# with every library in the interpreter, so any import or call that happens to
+# draw from it before (or during) generation shifts this notebook's stream and
+# silently changes the output for a fixed SEED. That is not hypothetical: the
+# Delta tables and the frozen batch in data/demo_batch/ diverged on their first
+# four orders because the cluster environment drew 128 bits from the global
+# stream that the local run did not. A private Random(SEED) is unreachable from
+# anything else, so the output depends on SEED alone.
+rng = random.Random(SEED)
 
 
 def new_id() -> str:
-    # uuid.uuid4() draws from os.urandom(), not Python's random module, so it
-    # would ignore SEED and break reproducibility. This derives a UUID4 from
-    # the seeded random module instead.
-    return str(uuid.UUID(int=random.getrandbits(128), version=4))
+    # uuid.uuid4() draws from os.urandom(), not our generator, so it would
+    # ignore SEED and break reproducibility. This derives a UUID4 from `rng`
+    # instead.
+    return str(uuid.UUID(int=rng.getrandbits(128), version=4))
 
 # COMMAND ----------
 
@@ -108,13 +107,13 @@ orders = []
 for i in range(NUM_ORDERS):
     batch_index = i // BATCH_SIZE
     order_date = BASE_DATE + timedelta(days=batch_index)
-    order_amount = round(random.uniform(100.0, 5000.0), 2)
+    order_amount = round(rng.uniform(100.0, 5000.0), 2)
 
-    has_refund = random.random() < REFUND_PROBABILITY
+    has_refund = rng.random() < REFUND_PROBABILITY
     if has_refund:
-        refund_fraction = random.uniform(0.2, 1.0)
+        refund_fraction = rng.uniform(0.2, 1.0)
         refund_amount = round(order_amount * refund_fraction, 2)
-        refund_date = order_date + timedelta(days=random.randint(1, 3))
+        refund_date = order_date + timedelta(days=rng.randint(1, 3))
     else:
         refund_amount = None
         refund_date = None
@@ -122,7 +121,7 @@ for i in range(NUM_ORDERS):
     orders.append(
         {
             "order_id": new_id(),
-            "customer_id": f"CUST-{random.randint(1, NUM_CUSTOMERS):05d}",
+            "customer_id": f"CUST-{rng.randint(1, NUM_CUSTOMERS):05d}",
             "order_amount": order_amount,
             "order_date": order_date,
             "refund_amount": refund_amount,
@@ -147,7 +146,7 @@ orders_by_id = {o["order_id"]: o for o in orders}
 # COMMAND ----------
 
 shuffled_order_ids = [o["order_id"] for o in orders]
-random.shuffle(shuffled_order_ids)
+rng.shuffle(shuffled_order_ids)
 
 n_timing_lag = round(TIMING_LAG_RATE * NUM_ORDERS)
 n_mdr_mismatch = round(MDR_MISMATCH_RATE * NUM_ORDERS)
@@ -156,7 +155,7 @@ n_missing_payout = round(MISSING_PAYOUT_RATE * NUM_ORDERS)
 
 # Kept as lists, not sets: iterating a set of strings has an order that
 # depends on Python's per-process hash randomization, not just SEED. The
-# timing-lag loop below draws from the shared `random` stream while
+# timing-lag loop below draws from the seeded `rng` stream while
 # iterating, so a randomized iteration order would silently make the output
 # non-reproducible even with a fixed seed.
 cursor = 0
@@ -183,9 +182,9 @@ for oid in missing_payout_ids:
 for oid in timing_lag_ids:
     o = orders_by_id[oid]
     if o["refund_amount"] is None:
-        refund_fraction = random.uniform(0.2, 1.0)
+        refund_fraction = rng.uniform(0.2, 1.0)
         o["refund_amount"] = round(o["order_amount"] * refund_fraction, 2)
-        o["refund_date"] = o["order_date"] + timedelta(days=random.randint(1, 3))
+        o["refund_date"] = o["order_date"] + timedelta(days=rng.randint(1, 3))
 
 # COMMAND ----------
 
@@ -202,7 +201,7 @@ for oid in timing_lag_ids:
 
 batch_indices = sorted({o["_batch_index"] for o in orders})
 utr_by_batch = {
-    batch_index: f"UTR{batch_index:06d}{random.randint(100000, 999999)}"
+    batch_index: f"UTR{batch_index:06d}{rng.randint(100000, 999999)}"
     for batch_index in batch_indices
 }
 batch_id_by_batch = {
@@ -400,6 +399,25 @@ for bf in bank_feed:
     assert abs(bf["bank_credit_amount"] - expected) < 0.01, (
         f"bank_feed credit for {bf['settlement_batch_id']} ({bf['bank_credit_amount']}) "
         f"does not match summed net_amount ({expected})"
+    )
+
+# Reproducibility fingerprint for the canonical demo parameters. "Seeded" has
+# already proven not to mean "identical everywhere": the frozen batch in
+# data/demo_batch/ and the Delta tables written by this notebook silently
+# diverged on their first four orders, and nothing failed. Pinning the
+# order_id sequence to a known digest means any future change — here, in a
+# library, or in the runtime — that perturbs the stream fails loudly instead.
+CANONICAL_PARAMS = (150, 42, 25)  # (num_orders, seed, settlement_batch_size)
+CANONICAL_ORDER_ID_DIGEST = "685fcef6287cef7aa90465d05103b1bc6f18010104bfa9afd4646a3fc1c840fe"
+
+if (NUM_ORDERS, SEED, BATCH_SIZE) == CANONICAL_PARAMS:
+    order_id_digest = hashlib.sha256(
+        "\n".join(o["order_id"] for o in orders).encode("utf-8")
+    ).hexdigest()
+    assert order_id_digest == CANONICAL_ORDER_ID_DIGEST, (
+        f"canonical batch {CANONICAL_PARAMS} produced order_id digest {order_id_digest}, "
+        f"expected {CANONICAL_ORDER_ID_DIGEST} — this run does not match the frozen batch "
+        "in data/demo_batch/, so something perturbed the seeded stream"
     )
 
 print(
