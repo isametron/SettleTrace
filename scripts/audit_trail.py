@@ -3,8 +3,8 @@
 This is the artifact that makes SettleTrace defensible rather than merely
 clever. For every order it records, in one place: what the deterministic engine
 matched or flagged and on what numbers, what the LLM agent independently
-diagnosed and recommended, whether those two agree, and — explicitly, on every
-single record — that **no autonomous action was taken**.
+diagnosed and recommended, whether those two agree, and, explicitly on every
+single record, that **no autonomous action was taken**.
 
 The governance stance encoded here:
 
@@ -21,7 +21,7 @@ The governance stance encoded here:
   either one.
 - **Nothing is actioned.** No ledger entry, payout, refund, or write-back to any
   source system happens anywhere in this pipeline. Every record says so, so that
-  a reviewer reading any single line — not just the summary — can see it.
+  a reviewer reading any single line, not just the summary, can see it.
 
 Records are written as JSONL (full fidelity, one object per line) plus a
 flattened CSV for spreadsheet review. In a production deployment this would be
@@ -33,12 +33,13 @@ Why the agent's words are stored verbatim rather than regenerated on demand:
 measured on Day 5, re-running the identical 19 cases at `temperature=0` produced
 the same *category* every time but different *prose* on 11 of 19 (see
 scripts/reasoning_agent.py). An explanation that cannot be reproduced by
-re-running is only preserved if it was written down when it was made — which is
+re-running is only preserved if it was written down when it was made, which is
 the whole job of this module.
 """
 
 import csv
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -63,7 +64,7 @@ def utc_now_iso() -> str:
 class EngineEvidence(BaseModel):
     """The numbers the deterministic engine actually compared, kept with the verdict.
 
-    A category on its own ages badly — six months later nobody can tell whether
+    A category on its own ages badly. Six months later nobody can tell whether
     it was right. The figures it was derived from make the record re-checkable
     without re-running anything.
     """
@@ -109,6 +110,7 @@ class AuditRecord(BaseModel):
     agent_case_fingerprint: str | None = None
     agent_latency_ms: int | None = None
     agent_error: str | None = None
+    agent_explanation_cites_figures: bool = False
 
     # --- Adjudication between the two ---
     engine_agent_agreement: Literal["agree", "disagree", "not_assessed"] = "not_assessed"
@@ -122,8 +124,30 @@ class AuditRecord(BaseModel):
     action_note: str = ACTION_NOTE
 
 
+def explanation_cites_figures(explanation: str | None) -> bool:
+    """Does the explanation quote an actual number, rather than just naming a category?
+
+    The prompt asks the agent to ground every explanation in the specific
+    figures it was given. Whether it complied is checkable without a model, so
+    it is recorded per row and counted per run instead of being left to whoever
+    happens to read the output.
+
+    A deliberately blunt test: any digit outside an identifier. It cannot judge
+    whether the *right* figure was cited, only whether the explanation is
+    arguing from evidence or from the category name. Two of the 19 explanations
+    in the committed run fail it, and one of those is legitimate: a missing
+    payout has no settlement figures to cite. So this is a signal to read, not a
+    gate to enforce, which is why nothing branches on it.
+    """
+    if not explanation:
+        return False
+    # Strip UUIDs first, or a transaction_id would count as "citing a figure".
+    without_ids = re.sub(r"[0-9a-f]{8}-[0-9a-f-]{27}", "", explanation)
+    return bool(re.search(r"\d", without_ids))
+
+
 class RunSummary(BaseModel):
-    """Run-level rollup — the page a reviewer reads before the line items."""
+    """Run-level rollup: the page a reviewer reads before the line items."""
 
     schema_version: str = AUDIT_SCHEMA_VERSION
     run_id: str
@@ -150,6 +174,7 @@ class RunSummary(BaseModel):
     agent_total_latency_ms: int
     agreement_on_flagged: dict[str, int]
     mean_agent_confidence: float | None
+    explanations_citing_figures: int = 0
 
     orders_needing_human_review: int
     orders_auto_cleared: int
@@ -172,6 +197,7 @@ CSV_COLUMNS = [
     "agent_cause",
     "agent_confidence",
     "agent_explanation",
+    "agent_explanation_cites_figures",
     "agent_recommended_action",
     "agent_error",
     "engine_agent_agreement",
@@ -189,7 +215,7 @@ def decide_review(
 
     Deliberately conservative in both directions: anything the engine flagged
     needs a human regardless of how confident the agent sounds, and an order the
-    engine cleared still gets escalated if the agent saw something in it — the
+    engine cleared still gets escalated if the agent saw something in it. The
     agent can't clear work, only add doubt.
     """
     if engine_category != "clean_match":
@@ -198,7 +224,7 @@ def decide_review(
                 "needs_human_review",
                 (
                     "Engine flagged an exception and the advisory agent diagnosed a "
-                    "different cause — review both before acting."
+                    "different cause. Review both before acting."
                 ),
             )
         return (
@@ -211,14 +237,14 @@ def decide_review(
             "needs_human_review",
             (
                 "Engine matched cleanly, but the advisory agent failed to return a valid "
-                "diagnosis for this control sample — flagged so the failure isn't invisible."
+                "diagnosis for this control sample, flagged so the failure isn't invisible."
             ),
         )
     if agreement == "disagree":
         return (
             "needs_human_review",
             (
-                "Engine matched cleanly but the advisory agent disagreed — escalated "
+                "Engine matched cleanly but the advisory agent disagreed, escalated "
                 "rather than resolved toward either."
             ),
         )
@@ -242,7 +268,7 @@ def record_to_flat_dict(record: AuditRecord) -> dict:
 
 
 def flat_column_names() -> list[str]:
-    """Column order for the flattened table — derived from the models, not typed twice."""
+    """Column order for the flattened table, derived from the models, not typed twice."""
     columns = [name for name in AuditRecord.model_fields if name != "engine_evidence"]
     evidence = [f"{EVIDENCE_PREFIX}{name}" for name in EngineEvidence.model_fields]
     return columns + evidence

@@ -1,33 +1,33 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 02 — Reconcile Settlements (3-tier match)
+# MAGIC # 02: Reconcile Settlements (3-tier match)
 # MAGIC
 # MAGIC Reads only the "operational" tables a real reconciliation engine would ever
-# MAGIC see — `orders`, `settlement_report`, `bank_feed` — and classifies every order
+# MAGIC see (`orders`, `settlement_report`, `bank_feed`) and classifies every order
 # MAGIC into one of three tiers, purely by recomputing what settlement *should* look
 # MAGIC like from `orders` and comparing it against what `settlement_report` actually
 # MAGIC shows. `ground_truth` (written by the generator notebook) is deliberately not
-# MAGIC touched until the very last, clearly-separated "accuracy check" section —
-# MAGIC everything above that point is what a real engine would have to do blind.
+# MAGIC touched until the very last, clearly-separated "accuracy check" section.
+# MAGIC Everything above that point is what a real engine would have to do blind.
 # MAGIC
 # MAGIC Tiers:
-# MAGIC - **exact** — the order has one settlement line and the full settlement
+# MAGIC - **exact**: the order has one settlement line and the full settlement
 # MAGIC   identity ties out within tolerance:
 # MAGIC   `net_amount == order_amount - mdr_fee - gst_on_mdr - refund_adjustment`,
 # MAGIC   with the fee and GST also matching the agreed rate. All four figures are
 # MAGIC   compared, not just the two that have exception types attached to them.
-# MAGIC - **fuzzy** — the order has one settlement line, it's linked correctly, but a
+# MAGIC - **fuzzy**: the order has one settlement line, it's linked correctly, but a
 # MAGIC   specific figure doesn't tie out: `mdr_rate_mismatch` (fee doesn't match the
 # MAGIC   agreed rate), `timing_lag_refund` (order has a refund the settlement line
 # MAGIC   doesn't reflect), or `unexplained_value_break` (fee and refund both tie out
-# MAGIC   but the settlement identity still doesn't hold — a real break with no known
-# MAGIC   cause, which would otherwise have passed as a clean match).
-# MAGIC - **no_match** — the order can't be linked to settlement at all, structurally:
+# MAGIC   but the settlement identity still doesn't hold; a real break with no
+# MAGIC   known cause, which would otherwise have passed as a clean match).
+# MAGIC - **no_match**: the order can't be linked to settlement at all, structurally:
 # MAGIC   `missing_payout` (zero settlement lines) or `duplicate_transaction` (two or
 # MAGIC   more lines for the same order/transaction).
 # MAGIC
 # MAGIC A separate, batch-level check cross-references `bank_feed` against the sum of
-# MAGIC `settlement_report.net_amount` per batch — the "multi-source" half of the
+# MAGIC `settlement_report.net_amount` per batch, the "multi-source" half of the
 # MAGIC reconciliation, on top of the order-level checks above.
 
 # COMMAND ----------
@@ -58,7 +58,7 @@ def breaks_tolerance(actual, expected):
     2. Rounding conventions genuinely differ across the pipeline. Python's
        `round()` is banker's rounding (HALF_EVEN) and Spark's `F.round()` is
        HALF_UP, so the generator and this engine can legitimately land one
-       paisa apart on the same arithmetic -- three orders in the 150-order demo
+       paisa apart on the same arithmetic. Three orders in the 150-order demo
        batch do exactly that on `gst_on_mdr`. A one-paisa rounding convention
        gap is precisely what a one-paisa tolerance exists to absorb; it is not
        a settlement break, and treating it as one would bury the real ones.
@@ -118,7 +118,7 @@ expected_df = (
 # MAGIC How many settlement lines does each order actually have? 0 = missing payout,
 # MAGIC 2+ = duplicate. For orders with exactly 1, `first(...)` picks that one line
 # MAGIC (safe for the 2+ case too, since duplicates in this pipeline are always
-# MAGIC verbatim copies of each other — a genuinely different-valued double payout
+# MAGIC verbatim copies of each other; a genuinely different-valued double payout
 # MAGIC would need its own category, not something this batch injects).
 
 # COMMAND ----------
@@ -142,13 +142,59 @@ settlement_per_order = settlement_df.groupBy("order_id").agg(
 # MAGIC Checks run in priority order: structural problems (missing/duplicate) are
 # MAGIC decided before any value comparison, since a duplicated or absent line makes
 # MAGIC a fee/refund comparison meaningless. Within a single linked line, MDR is
-# MAGIC checked before refund — the two exception types never overlap on the same
+# MAGIC checked before refund. The two exception types never overlap on the same
 # MAGIC order in this dataset, but the priority still needs to be well-defined.
+# MAGIC
+# MAGIC Two different kinds of comparison happen here, and the distinction matters:
+# MAGIC
+# MAGIC 1. **Charged vs. expected.** `mdr_fee` and `refund_adjustment` are compared
+# MAGIC    against figures recomputed from `orders`. These catch a wrong rate or an
+# MAGIC    unnetted refund, and they are what `mdr_rate_mismatch` and
+# MAGIC    `timing_lag_refund` mean.
+# MAGIC 2. **The line against itself.** The settlement identity,
+# MAGIC    `net_amount == order_amount - mdr_fee - gst_on_mdr - refund_adjustment`,
+# MAGIC    is evaluated on the figures the settlement file *actually charged*. This
+# MAGIC    catches a line whose own arithmetic does not add up, which no known
+# MAGIC    exception type explains, and which used to pass silently as a clean
+# MAGIC    match because nothing compared `gst_on_mdr` or `net_amount` at all.
+# MAGIC
+# MAGIC Keeping (2) on the charged figures is deliberate. Rebuilding the net from
+# MAGIC *expected* figures lets a one-paisa rounding difference on the fee and
+# MAGIC another on the GST compound into two paise, breaking a one-paisa tolerance
+# MAGIC on an order where nothing is wrong. A 1000-order scale run found exactly
+# MAGIC that. The fix is to compare like with like, not to widen the tolerance.
 
 # COMMAND ----------
 
-joined = expected_df.join(settlement_per_order, "order_id", "left").withColumn(
-    "settlement_row_count", F.coalesce(F.col("settlement_row_count"), F.lit(0))
+joined = (
+    expected_df.join(settlement_per_order, "order_id", "left")
+    .withColumn("settlement_row_count", F.coalesce(F.col("settlement_row_count"), F.lit(0)))
+    # The settlement line's *own* arithmetic, recomputed from the figures the
+    # settlement file actually charged rather than the ones we expected. This is
+    # the identity the spec defines, and checking it this way is what keeps it
+    # independent of the expected-vs-actual comparisons above: those already
+    # catch a wrong rate, so this only has to catch a line that does not add up
+    # against itself.
+    #
+    # It has to be done from the charged figures, not the expected ones.
+    # Rounding a fee and a GST amount independently can each be a paisa off (see
+    # `breaks_tolerance`), and rebuilding a net from both makes those errors
+    # compound into two paise, which then breaks a one-paisa tolerance on an
+    # order where nothing is actually wrong. A 1000-order scale run found
+    # exactly that. Deriving the net from the same numbers the payment
+    # processor used removes the compounding instead of hiding it behind a
+    # wider tolerance.
+    .withColumn("gst_on_charged_fee", F.round(F.col("mdr_fee") * F.lit(GST_RATE), 2))
+    .withColumn(
+        "identity_net_amount",
+        F.round(
+            F.col("order_amount")
+            - F.col("mdr_fee")
+            - F.col("gst_on_mdr")
+            - F.col("refund_adjustment"),
+            2,
+        ),
+    )
 )
 
 classified = joined.withColumn(
@@ -163,11 +209,11 @@ classified = joined.withColumn(
         breaks_tolerance(F.col("refund_adjustment"), F.col("expected_refund_adjustment")),
         F.lit("timing_lag_refund"),
     )
-    # Fee and refund both tie out, so no known exception type explains this —
+    # Fee and refund both tie out, so no known exception type explains this,
     # but the identity still has to hold on GST and on the net itself.
     .when(
-        breaks_tolerance(F.col("gst_on_mdr"), F.col("expected_gst_on_mdr"))
-        | breaks_tolerance(F.col("net_amount"), F.col("expected_net_amount")),
+        breaks_tolerance(F.col("gst_on_mdr"), F.col("gst_on_charged_fee"))
+        | breaks_tolerance(F.col("net_amount"), F.col("identity_net_amount")),
         F.lit("unexplained_value_break"),
     )
     .otherwise(F.lit("clean_match")),
@@ -210,7 +256,7 @@ classified = joined.withColumn(
         F.concat(
             F.lit("Order has "),
             F.col("settlement_row_count").cast("string"),
-            F.lit(" settlement lines for the same transaction — investigate duplicate payout."),
+            F.lit(" settlement lines for the same transaction. Investigate duplicate payout."),
         ),
     )
     .when(
@@ -220,16 +266,18 @@ classified = joined.withColumn(
     .when(
         F.col("category") == "unexplained_value_break",
         F.concat(
-            F.lit("MDR fee and refund adjustment both tie out, but the settlement identity "),
-            F.lit("does not: expected gst_on_mdr "),
-            F.col("expected_gst_on_mdr").cast("string"),
-            F.lit(" / net_amount "),
-            F.col("expected_net_amount").cast("string"),
-            F.lit(", actual gst_on_mdr "),
+            F.lit("MDR fee and refund adjustment both tie out, but the settlement line "),
+            F.lit("does not add up against itself: on a charged fee of "),
+            F.col("mdr_fee").cast("string"),
+            F.lit(", GST should be "),
+            F.col("gst_on_charged_fee").cast("string"),
+            F.lit(" (actual "),
             F.col("gst_on_mdr").cast("string"),
-            F.lit(" / net_amount "),
+            F.lit(") and net should be "),
+            F.col("identity_net_amount").cast("string"),
+            F.lit(" (actual "),
             F.col("net_amount").cast("string"),
-            F.lit(". No known exception type explains this — investigate."),
+            F.lit("). No known exception type explains this; investigate."),
         ),
     )
     .otherwise(F.lit("")),
@@ -317,11 +365,11 @@ display(result_df.orderBy(F.col("match_tier") != "exact", "category").limit(20))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Accuracy check against `ground_truth` — test-only, not part of the engine
+# MAGIC ## Accuracy check against `ground_truth`: test-only, not part of the engine
 # MAGIC
 # MAGIC Everything above this cell only ever reads `orders` / `settlement_report` /
 # MAGIC `bank_feed`. This section reads `ground_truth` purely to grade the
-# MAGIC classification above — it isn't a step a real reconciliation run would have.
+# MAGIC classification above. It isn't a step a real reconciliation run would have.
 
 # COMMAND ----------
 
@@ -346,7 +394,7 @@ if mismatch_count:
         mismatch_count, truncate=False
     )
 else:
-    print("No mismatches — every order's category matches its ground_truth label.")
+    print("No mismatches. Every order's category matches its ground_truth label.")
 
 # COMMAND ----------
 

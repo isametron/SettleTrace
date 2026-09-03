@@ -2,23 +2,23 @@ r"""SettleTrace end-to-end: data -> match -> exception reasoning -> audit log.
 
 Runs all four stages in one command against the frozen demo batch:
 
-1. **Data** — the committed `data/demo_batch/*.csv` snapshot (regenerate with
+1. **Data**: the committed `data/demo_batch/*.csv` snapshot (regenerate with
    scripts/export_demo_batch.py).
-2. **Match** — the real `notebooks/02_reconcile_settlements.py`, executed
+2. **Match**: the real `notebooks/02_reconcile_settlements.py`, executed
    against a local SparkSession via scripts/local_spark_harness.py. Not a
    reimplementation: the same notebook source that runs on Databricks.
-3. **Reason** — every order the engine flagged is sent to the advisory LLM agent
+3. **Reason**: every order the engine flagged is sent to the advisory LLM agent
    (scripts/reasoning_agent.py) for an independent diagnosis, plus a small
    deterministic sample of *clean* orders as controls, so the agent's
    false-positive behaviour is measured rather than assumed.
-4. **Audit** — one record per order written to the audit trail
+4. **Audit**: one record per order written to the audit trail
    (scripts/audit_trail.py), each stating explicitly that no autonomous action
    was taken.
 
 Why the reasoning stage runs locally rather than inside notebook 03: the agent
 targets a local model server on `localhost`, which a Databricks cluster cannot
 reach. Moving this stage onto the cluster needs a cluster-reachable endpoint
-(Databricks Model Serving or a hosted API) — the stage boundary here is drawn
+(Databricks Model Serving or a hosted API). The stage boundary here is drawn
 so that swapping the endpoint is the only change required.
 
 Usage (PowerShell, with a JDK and the local model server both up):
@@ -47,6 +47,7 @@ from audit_trail import (
     GradingReport,
     RunSummary,
     decide_review,
+    explanation_cites_figures,
     utc_now_iso,
     write_audit_log,
     write_grading_report,
@@ -127,7 +128,7 @@ def display_path(path: Path) -> str:
 
 
 def run_matching(quiet: bool = True) -> tuple[list[dict], dict]:
-    """Stage 2 — run the real reconciliation notebook, return its result rows."""
+    """Stage 2: run the real reconciliation notebook, return its result rows."""
     java_problem = check_java_available()
     if java_problem:
         raise RuntimeError(java_problem)
@@ -152,8 +153,8 @@ def run_matching(quiet: bool = True) -> tuple[list[dict], dict]:
 def select_control_orders(clean_order_ids: list[str], count: int) -> list[str]:
     """Deterministically pick clean orders to double-check the agent against.
 
-    Seeded and sorted so the same demo batch always yields the same controls —
-    an audit trail whose sample set moves between runs can't be compared to the
+    Seeded and sorted so the same demo batch always yields the same controls.
+    An audit trail whose sample set moves between runs can't be compared to the
     previous run's.
     """
     if count <= 0:
@@ -226,10 +227,10 @@ def main() -> int:
     run_started_at = utc_now_iso()
     started = time.perf_counter()
 
-    print(f"SettleTrace pipeline — run_id={run_id} started {run_started_at}")
+    print(f"SettleTrace pipeline: run_id={run_id} started {run_started_at}")
 
     # --- Stage 1: data -----------------------------------------------------
-    stage_header(1, "Data — frozen demo batch")
+    stage_header(1, "Data: frozen demo batch")
     missing = [name for name in DEMO_TABLE_SCHEMAS if not (DATA_DIR / f"{name}.csv").exists()]
     if missing:
         print(f"Missing demo batch files: {missing}")
@@ -244,7 +245,7 @@ def main() -> int:
     )
 
     # --- Stage 2: match ----------------------------------------------------
-    stage_header(2, "Match — notebooks/02_reconcile_settlements.py on local Spark")
+    stage_header(2, "Match: notebooks/02_reconcile_settlements.py on local Spark")
     try:
         result_rows, batch_stats = run_matching(quiet=True)
     except RuntimeError as e:
@@ -281,7 +282,7 @@ def main() -> int:
     ]
 
     # --- Stage 3: reason ---------------------------------------------------
-    stage_header(3, "Reason — advisory LLM diagnosis on flagged orders")
+    stage_header(3, "Reason: advisory LLM diagnosis on flagged orders")
     diagnoses: dict[str, dict] = {}
     agent: ReasoningAgent | None = None
     total_latency_ms = 0
@@ -338,7 +339,7 @@ def main() -> int:
             )
 
     # --- Stage 4: audit ----------------------------------------------------
-    stage_header(4, "Audit — write the trail")
+    stage_header(4, "Audit: write the trail")
     # The endpoint actually used, not what was asked for: --model defaults to
     # None and is resolved per backend, so the audit record must record the
     # resolved name or its provenance is wrong.
@@ -415,6 +416,9 @@ def main() -> int:
                 agent_selection_reason=selection_reason,
                 agent_skip_reason=skip_reason,
                 agent_error=agent_error,
+                agent_explanation_cites_figures=explanation_cites_figures(
+                    agent_fields.get("agent_explanation")
+                ),
                 engine_agent_agreement=agreement,
                 review_status=review_status,
                 review_reason=review_reason,
@@ -456,6 +460,9 @@ def main() -> int:
         agreement_on_flagged=agreement_on_flagged,
         mean_agent_confidence=(
             round(sum(confidences) / len(confidences), 3) if confidences else None
+        ),
+        explanations_citing_figures=sum(
+            1 for r in records if r.agent_explanation_cites_figures
         ),
         orders_needing_human_review=sum(
             1 for r in records if r.review_status == "needs_human_review"

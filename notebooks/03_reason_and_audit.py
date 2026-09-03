@@ -1,26 +1,26 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 03 — Exception Reasoning + Audit Trail
+# MAGIC # 03: Exception Reasoning and Audit Trail
 # MAGIC
 # MAGIC Stage 3 and 4 of the SettleTrace pipeline, running entirely on Databricks.
 # MAGIC
 # MAGIC Reads `reconciliation_result` (written by `02_reconcile_settlements.py`) and,
 # MAGIC for every order the deterministic engine **flagged**, asks an LLM to diagnose
-# MAGIC the cause *independently* — without being told the engine's own category — via
-# MAGIC a Foundation Model API serving endpoint in this workspace. A small
+# MAGIC the cause *independently*, without being told the engine's own category,
+# MAGIC via a Foundation Model API serving endpoint in this workspace. A small
 # MAGIC deterministic sample of *clean* orders goes through too, as controls, so the
 # MAGIC agent's false-positive behaviour is measured rather than assumed.
 # MAGIC
 # MAGIC Everything lands in the `audit_log` Delta table: one row per order carrying the
 # MAGIC engine's verdict and the figures behind it, the agent's diagnosis and
-# MAGIC recommendation, whether the two agree, and — on every row — an explicit
+# MAGIC recommendation, whether the two agree, and, on every row, an explicit
 # MAGIC `autonomous_action_taken = false`.
 # MAGIC
 # MAGIC ## The governance model
 # MAGIC
 # MAGIC - The **deterministic engine is authoritative**. It decides the category.
 # MAGIC - The **agent is advisory**. It explains and recommends; it never overrides,
-# MAGIC   and it can never clear work — only add doubt.
+# MAGIC   and it can never clear work, only add doubt.
 # MAGIC - **Disagreement escalates** to human review rather than resolving toward
 # MAGIC   either side.
 # MAGIC - **Nothing is actioned.** No ledger entry, payout, refund, or write-back to
@@ -28,7 +28,7 @@
 # MAGIC
 # MAGIC The prompt, response schema, and case-builder are imported from
 # MAGIC `scripts/reasoning_agent.py`, and the audit record schema from
-# MAGIC `scripts/audit_trail.py` — the same modules the local runner
+# MAGIC `scripts/audit_trail.py`. These are the same modules the local runner
 # MAGIC (`scripts/run_pipeline.py`) uses, so cluster and laptop cannot drift apart.
 
 # COMMAND ----------
@@ -95,7 +95,7 @@ TEMPERATURE = float(dbutils.widgets.get("temperature"))
 # MAGIC %md
 # MAGIC ## Load the engine's output and the operational tables
 # MAGIC
-# MAGIC `ground_truth` is deliberately not read here — it appears only in the
+# MAGIC `ground_truth` is deliberately not read here. It appears only in the
 # MAGIC clearly-separated grading section at the very bottom, same boundary
 # MAGIC `02_reconcile_settlements.py` draws.
 
@@ -130,7 +130,7 @@ print(
 # MAGIC The shared case-builder was written against the demo-batch CSVs, where every
 # MAGIC field arrives as a string. Reading Delta gives real doubles/dates instead, so
 # MAGIC the rows are normalised to the CSV shape here rather than by loosening
-# MAGIC `build_case` — the local runner and this notebook then feed the model
+# MAGIC `build_case`. The local runner and this notebook then feed the model
 # MAGIC byte-identical prompts, which is the whole point of sharing the module.
 
 # COMMAND ----------
@@ -231,7 +231,7 @@ print(f"\nDiagnosed {len(diagnoses)} orders in {total_latency_ms / 1000:.1f}s of
 # MAGIC %md
 # MAGIC ## Build the audit records
 # MAGIC
-# MAGIC One per order — including the 130-odd the agent never saw, which are recorded
+# MAGIC One per order, including the 130-odd the agent never saw, which are recorded
 # MAGIC as auto-cleared with the reason they weren't escalated. A log that only
 # MAGIC contains exceptions can't answer "was this order looked at?".
 
@@ -307,6 +307,9 @@ for row in sorted(result_rows, key=lambda r: (tier_order[r["match_tier"]], r["or
             agent_selection_reason=selection_reason,
             agent_skip_reason=skip_reason,
             agent_error=agent_error,
+            agent_explanation_cites_figures=audit_trail.explanation_cites_figures(
+                agent_fields.get("agent_explanation")
+            ),
             engine_agent_agreement=agreement,
             review_status=review_status,
             review_reason=review_reason,
@@ -418,7 +421,7 @@ display(
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Accuracy check against `ground_truth` — test-only, not part of the pipeline
+# MAGIC ## Accuracy check against `ground_truth`: test-only, not part of the pipeline
 # MAGIC
 # MAGIC Everything above reads only `reconciliation_result` and the operational
 # MAGIC tables. This section reads the answer key purely to grade the agent, exactly

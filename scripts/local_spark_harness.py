@@ -92,7 +92,7 @@ DEMO_TABLE_SCHEMAS = {
 
 
 class FakeWidgets:
-    """Stand-in for `dbutils.widgets` — same text/get surface the notebooks use."""
+    """Stand-in for `dbutils.widgets`, with the same text/get surface the notebooks use."""
 
     def __init__(self, values: dict | None = None):
         self._values = dict(values or {})
@@ -134,7 +134,7 @@ def check_java_available() -> str | None:
     if which("java"):
         return None
     return (
-        "No JDK found (JAVA_HOME unset and `java` not on PATH). Local Spark needs one — "
+        "No JDK found (JAVA_HOME unset and `java` not on PATH). Local Spark needs one. "
         "see this module's docstring for the environment variables to set."
     )
 
@@ -147,12 +147,20 @@ def build_local_spark(app_name: str = "settletrace-local") -> SparkSession:
 
 
 def load_demo_tables(
-    spark: SparkSession, catalog: str = DEFAULT_CATALOG, schema_name: str = DEFAULT_SCHEMA
+    spark: SparkSession,
+    catalog: str = DEFAULT_CATALOG,
+    schema_name: str = DEFAULT_SCHEMA,
+    data_dir: Path = DATA_DIR,
 ) -> dict:
-    """Read the frozen demo batch CSVs, keyed by the dotted table name notebooks use."""
+    """Read a batch of CSVs, keyed by the dotted table name the notebooks use.
+
+    `data_dir` defaults to the frozen demo batch. scripts/scale_test.py points it
+    at a larger generated batch instead, so throughput is measured against the
+    same notebook code the correctness test runs.
+    """
     return {
         f"{catalog}.{schema_name}.{table}": spark.read.csv(
-            str(DATA_DIR / f"{table}.csv"), header=True, schema=schema
+            str(data_dir / f"{table}.csv"), header=True, schema=schema
         )
         for table, schema in DEMO_TABLE_SCHEMAS.items()
     }
@@ -164,18 +172,19 @@ def run_reconciliation_notebook(
     schema_name: str = DEFAULT_SCHEMA,
     tolerance: str = "0.01",
     quiet: bool = False,
+    data_dir: Path = DATA_DIR,
 ) -> tuple[dict, dict]:
     """Execute notebooks/02_reconcile_settlements.py against the demo batch.
 
-    Returns `(exec_globals, written_tables)` — the notebook's own module-level
+    Returns `(exec_globals, written_tables)`: the notebook's own module-level
     names (so callers can read `total_orders`, `correct`, etc.) and whatever it
     tried to `saveAsTable`, keyed by dotted table name.
 
     Running the real notebook source, rather than a reimplementation of it,
-    keeps one source of truth for the reconciliation logic — the same reason
+    keeps one source of truth for the reconciliation logic, the same reason
     scripts/export_demo_batch.py exec's notebook 01 instead of copying it.
     """
-    tables = load_demo_tables(spark, catalog, schema_name)
+    tables = load_demo_tables(spark, catalog, schema_name, data_dir)
     spark.table = lambda name: tables[name]
 
     written_tables = {}
@@ -200,11 +209,11 @@ def run_reconciliation_notebook(
         original_stdout = sys.stdout
         sys.stdout = open(os.devnull, "w", encoding="utf-8")  # noqa: SIM115
         try:
-            exec(compile(source, str(RECONCILE_NOTEBOOK), "exec"), exec_globals)  # noqa: S102 -- our own notebook source, not untrusted input
+            exec(compile(source, str(RECONCILE_NOTEBOOK), "exec"), exec_globals)  # noqa: S102  # our own notebook source, not untrusted input
         finally:
             sys.stdout.close()
             sys.stdout = original_stdout
     else:
-        exec(compile(source, str(RECONCILE_NOTEBOOK), "exec"), exec_globals)  # noqa: S102 -- our own notebook source, not untrusted input
+        exec(compile(source, str(RECONCILE_NOTEBOOK), "exec"), exec_globals)  # noqa: S102  # our own notebook source, not untrusted input
 
     return exec_globals, written_tables

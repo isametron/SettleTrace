@@ -1,29 +1,29 @@
 # Databricks notebook source
 # MAGIC %md
-# MAGIC # 01 — Generate Synthetic Settlement Data
+# MAGIC # 01: Generate Synthetic Settlement Data
 # MAGIC
 # MAGIC Produces four linked tables that simulate a lumped Razorpay-style settlement,
 # MAGIC with realistic messiness injected on top of an otherwise clean batch:
 # MAGIC
-# MAGIC - `orders` — the internal ledger: what the merchant's system thinks happened.
-# MAGIC - `settlement_report` — per-order line items (gross amount, MDR fee, GST-on-MDR,
+# MAGIC - `orders`: the internal ledger, what the merchant's system thinks happened.
+# MAGIC - `settlement_report`: per-order line items (gross amount, MDR fee, GST-on-MDR,
 # MAGIC   refund adjustment, net amount) grouped into settlement batches.
-# MAGIC - `bank_feed` — the lumped bank-side reality: one credit per settlement batch,
+# MAGIC - `bank_feed`: the lumped bank-side reality, one credit per settlement batch,
 # MAGIC   landing T+2 after the batch's order date.
-# MAGIC - `ground_truth` — the answer key: which orders are exact matches vs. which of
+# MAGIC - `ground_truth`: the answer key, saying which orders are exact matches and which of
 # MAGIC   four exception types they hit, and why. Not something a real reconciliation
-# MAGIC   engine gets to see — this exists purely to measure that engine's accuracy.
+# MAGIC   engine gets to see. It exists purely to measure that engine's accuracy.
 # MAGIC
 # MAGIC Exception categories injected (the rest are clean matches):
-# MAGIC - **timing_lag_refund** — the order has a refund, but it isn't netted into this
+# MAGIC - **timing_lag_refund**: the order has a refund, but it isn't netted into this
 # MAGIC   settlement batch yet (expected to land next cycle).
-# MAGIC - **mdr_rate_mismatch** — MDR was charged at a different rate than agreed.
-# MAGIC - **duplicate_transaction** — the same settlement line appears twice.
-# MAGIC - **missing_payout** — the order has no settlement line in this batch at all.
+# MAGIC - **mdr_rate_mismatch**: MDR was charged at a different rate than agreed.
+# MAGIC - **duplicate_transaction**: the same settlement line appears twice.
+# MAGIC - **missing_payout**: the order has no settlement line in this batch at all.
 # MAGIC
 # MAGIC Scale is controlled by the `num_orders` widget; exception rates by the
 # MAGIC `*_rate` widgets. Everything is seeded (`seed` widget), so a given
-# MAGIC `num_orders` + `seed` always reproduces byte-identical output — re-running
+# MAGIC `num_orders` + `seed` always reproduces byte-identical output. Re-running
 # MAGIC is idempotent (tables are overwritten each run).
 
 # COMMAND ----------
@@ -94,7 +94,7 @@ def new_id() -> str:
 # MAGIC ## Generate `orders`
 # MAGIC
 # MAGIC Orders are laid out `BATCH_SIZE` per day, so grouping by order date later
-# MAGIC produces the same batches used for settlement — mirroring a daily settlement cycle.
+# MAGIC produces the same batches used for settlement, mirroring a daily settlement cycle.
 # MAGIC ~15% get a natural refund a few days later; this is independent of the
 # MAGIC `timing_lag_refund` exception injected below.
 
@@ -138,7 +138,7 @@ orders_by_id = {o["order_id"]: o for o in orders}
 # MAGIC %md
 # MAGIC ## Assign exception labels
 # MAGIC
-# MAGIC Every order gets exactly one label — one of the four exception types, or
+# MAGIC Every order gets exactly one label: one of the four exception types, or
 # MAGIC `clean_match`. Labels are assigned to disjoint, seeded-random subsets of
 # MAGIC orders before settlement lines are generated, so the generation step below
 # MAGIC can just branch on the label.
@@ -260,7 +260,7 @@ for oid in duplicate_ids:
 # MAGIC One row per settlement batch: the lumped credit that actually lands, T+2 after
 # MAGIC the batch's order date. Computed from the (possibly messy) `settlement_report`
 # MAGIC above, so a duplicate or a missing payout flows through into what the bank
-# MAGIC actually credits — exactly like production.
+# MAGIC actually credits, exactly like production.
 
 # COMMAND ----------
 
@@ -289,7 +289,7 @@ for batch_index in batch_indices:
 # MAGIC ## Build `ground_truth`
 # MAGIC
 # MAGIC The answer key: one row per order, with the label and a short human-readable
-# MAGIC explanation — the same kind of reasoning the reconciliation agent itself should
+# MAGIC explanation, the same kind of reasoning the reconciliation agent itself should
 # MAGIC eventually produce on the exceptions it finds.
 
 # COMMAND ----------
@@ -405,8 +405,9 @@ for bf in bank_feed:
 # already proven not to mean "identical everywhere": the frozen batch in
 # data/demo_batch/ and the Delta tables written by this notebook silently
 # diverged on their first four orders, and nothing failed. Pinning the
-# order_id sequence to a known digest means any future change — here, in a
-# library, or in the runtime — that perturbs the stream fails loudly instead.
+# order_id sequence to a known digest means any future change that perturbs the
+# stream fails loudly instead, whether it happens here, in a library, or in the
+# runtime.
 CANONICAL_PARAMS = (150, 42, 25)  # (num_orders, seed, settlement_batch_size)
 CANONICAL_ORDER_ID_DIGEST = "685fcef6287cef7aa90465d05103b1bc6f18010104bfa9afd4646a3fc1c840fe"
 
@@ -416,7 +417,7 @@ if (NUM_ORDERS, SEED, BATCH_SIZE) == CANONICAL_PARAMS:
     ).hexdigest()
     assert order_id_digest == CANONICAL_ORDER_ID_DIGEST, (
         f"canonical batch {CANONICAL_PARAMS} produced order_id digest {order_id_digest}, "
-        f"expected {CANONICAL_ORDER_ID_DIGEST} — this run does not match the frozen batch "
+        f"expected {CANONICAL_ORDER_ID_DIGEST}. This run does not match the frozen batch "
         "in data/demo_batch/, so something perturbed the seeded stream"
     )
 

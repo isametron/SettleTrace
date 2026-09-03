@@ -9,22 +9,22 @@ tune it and lose comparability with the Day 4 result.
 
 The agent is *advisory*. It never sees the deterministic rule engine's own
 category (notebooks/02_reconcile_settlements.py), so its diagnosis is a genuine
-second opinion rather than a restatement of a label it was handed — which is
+second opinion rather than a restatement of a label it was handed. That is
 what makes engine-vs-agent agreement a meaningful signal rather than a
 tautology. It also never takes action; see scripts/audit_trail.py.
 
 Two interchangeable backends, selected by `backend=`:
 
-- **`databricks`** (default) — a Foundation Model API endpoint inside the
+- **`databricks`** (default): a Foundation Model API endpoint inside the
   workspace, e.g. `databricks-meta-llama-3-3-70b-instruct`. This is the one that
   runs in production, because a Databricks cluster can reach it; it cannot reach
   a model server on someone's laptop.
-- **`local`** — an OpenAI-compatible local server (tested against Bionic AI
+- **`local`**: an OpenAI-compatible local server (tested against Bionic AI
   Studio / LM Studio-style servers running Qwen2.5-7B-Instruct), kept because it
   costs nothing to iterate against.
 
 Both speak the same OpenAI chat protocol, so the backend only changes the base
-URL and credential — prompt, schema, and parsing are identical either way, which
+URL and credential. Prompt, schema, and parsing are identical either way, which
 is what makes the two measurable against each other on the same demo batch.
 """
 
@@ -45,7 +45,7 @@ GST_RATE = 0.18
 
 # Two backends, one code path. "databricks" is the one that matters: it targets
 # a Foundation Model API endpoint inside the workspace, which a Databricks
-# cluster can actually reach — unlike a model server on the developer's laptop.
+# cluster can actually reach, unlike a model server on the developer's laptop.
 # "local" is kept because it costs nothing to iterate against.
 DEFAULT_BACKEND = "databricks"
 DEFAULT_LOCAL_BASE_URL = "http://localhost:1234/v1"
@@ -84,17 +84,17 @@ Diagnose the order. Pick exactly one cause:
 - clean_match: the actual settlement line matches the recomputed expected \
 figures; there is no real issue.
 - timing_lag_refund: the order has a refund that is not reflected in this \
-settlement's refund_adjustment — it was likely processed too late for this \
+settlement's refund_adjustment. It was likely processed too late for this \
 cycle and should net out next time.
 - mdr_rate_mismatch: the MDR fee actually charged does not match the agreed \
 rate implied by the order's expected_mdr_rate.
 - duplicate_transaction: more than one settlement_report line exists for \
 this order.
 - missing_payout: no settlement_report line exists for this order at all.
-- other: none of the above cleanly fits — say in your explanation what you \
+- other: none of the above cleanly fits. Say in your explanation what you \
 actually see instead of forcing it into one of the categories above.
 
-Ground every explanation in the specific numbers you were given — cite the \
+Ground every explanation in the specific numbers you were given. Cite the \
 actual figures, not just the category name. confidence must be a decimal \
 between 0.0 and 1.0 (e.g. 0.85), never a percentage like 85. It should \
 reflect how unambiguous the evidence is: a clean arithmetic match or a \
@@ -104,7 +104,7 @@ a genuine fee dispute) should get a middling confidence, not a forced high \
 one."""
 
 # Recorded in every audit record, so a diagnosis can always be traced back to
-# the exact prompt that produced it — editing the prompt above changes this
+# the exact prompt that produced it. Editing the prompt above changes this
 # automatically, which a hand-maintained version number wouldn't.
 PROMPT_VERSION = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()[:12]
 
@@ -152,7 +152,7 @@ def build_databricks_client() -> tuple[OpenAI, str]:
 
     Databricks Foundation Model APIs speak the OpenAI chat protocol at
     `<host>/serving-endpoints`, so the only thing that changes between backends
-    is the base URL and the credential — the prompt, schema and parsing are
+    is the base URL and the credential. The prompt, schema and parsing are
     untouched.
 
     Auth resolves the same way everywhere `WorkspaceClient` runs: the notebook's
@@ -208,7 +208,7 @@ def build_case(
 
     Note what's absent: the rule engine's category, and `ground_truth`. The
     expected figures here are recomputed from the order alone, the same way the
-    engine does it — the agent gets the same raw evidence, not the conclusion.
+    engine does it, so the agent gets the same raw evidence, not the conclusion.
     """
     order = next(o for o in orders if o["order_id"] == order_id)
     lines = [s for s in settlement_report if s["order_id"] == order_id]
@@ -267,7 +267,7 @@ def format_case_for_prompt(case: dict) -> str:
             for line in case["settlement_lines"]
         )
     else:
-        lines_text = "  (none — no settlement_report row exists for this order)"
+        lines_text = "  (none: no settlement_report row exists for this order)"
 
     return f"""Order {case["order_id"]}:
 - order_amount: {case["order_amount"]}
@@ -309,15 +309,15 @@ class ReasoningAgent:
     on Day 5 by running the same 19 orders twice against this server, with
     identical input fingerprints both times:
 
-    - **cause was stable** — 0 of 19 diagnoses changed category;
-    - **the prose was not** — explanation text differed on 11 of 19, and
+    - **cause was stable**: 0 of 19 diagnoses changed category;
+    - **the prose was not**: explanation text differed on 11 of 19, and
       `confidence` moved on 2.
 
     So temperature=0 is worth setting (it stabilises the part that drives
     routing) but it does *not* make a run reproducible: this server's kernels
     are nondeterministic below the sampler. That is the load-bearing reason the
     audit trail stores each explanation verbatim (scripts/audit_trail.py) rather
-    than regenerating it on demand — re-running tomorrow yields different words
+    than regenerating it on demand. Re-running tomorrow yields different words
     for the same order, so the log is the only record of what was actually said.
     """
 
@@ -349,7 +349,7 @@ class ReasoningAgent:
     def diagnose(self, case: dict) -> tuple[ExceptionDiagnosis, int]:
         """Diagnose one order. Returns (diagnosis, latency_ms).
 
-        Retries only on a malformed/schema-invalid response — a 7B local model
+        Retries only on a malformed/schema-invalid response. A 7B local model
         occasionally emits one, and a retry usually fixes it. Connection and
         HTTP errors are left to propagate: those mean the server is down or
         misconfigured, which no amount of retrying fixes and which the caller

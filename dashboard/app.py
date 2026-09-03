@@ -1,9 +1,9 @@
-"""SettleTrace dashboard — the presentation layer over the audit trail.
+"""SettleTrace dashboard: the presentation layer over the audit trail.
 
 Reads the audit log produced by the pipeline (either the committed local run in
 `data/audit_log/`, or the live `audit_log` Delta table on Databricks) and shows
 what a reconciliation lead would actually want: how much money cleared, how much
-is held for review, and — for every held order — what the deterministic engine
+is held for review, and, for every held order, what the deterministic engine
 found and what the advisory agent thinks about it.
 
 The two things this deliberately puts on screen, because they are the point of
@@ -56,7 +56,7 @@ STATUS_SERIOUS = "#ec835a"
 STATUS_CRITICAL = "#d03b3b"
 
 # Category → status role. These are genuine states (how bad is this exception),
-# not series identity, so they take status tokens — always paired with the
+# not series identity, so they take status tokens, always paired with the
 # category label, never carrying meaning by hue alone.
 CATEGORY_STATUS = {
     "clean_match": STATUS_GOOD,
@@ -67,7 +67,7 @@ CATEGORY_STATUS = {
 }
 CATEGORY_LABEL = {
     "clean_match": "Clean match",
-    "timing_lag_refund": "Timing lag — refund",
+    "timing_lag_refund": "Refund timing lag",
     "mdr_rate_mismatch": "MDR rate mismatch",
     "duplicate_transaction": "Duplicate transaction",
     "missing_payout": "Missing payout",
@@ -81,7 +81,7 @@ FONT = 'system-ui, -apple-system, "Segoe UI", sans-serif'
 def inr(value: float, decimals: int = 2) -> str:
     """Indian digit grouping: ₹12,34,567.89 rather than ₹1,234,567.89."""
     if value is None:
-        return "—"
+        return "n/a"
     negative = value < 0
     whole, _, frac = f"{abs(value):.{decimals}f}".partition(".")
     if len(whole) > 3:
@@ -103,8 +103,8 @@ def quote_html(text: str) -> str:
     Two reasons this exists rather than passing the string straight through:
 
     - **It is model output.** Rendering it with `unsafe_allow_html` would let
-      anything the model emitted — or anything an upstream field smuggled into
-      the prompt — execute as markup in the reviewer's browser. Escape first.
+      anything the model emitted, or anything an upstream field smuggled into
+      the prompt, execute as markup in the reviewer's browser. Escape first.
     - Streamlit would otherwise parse the model's `- ` lines as a markdown list
       and hoist them out of the styled quote, so the agent column loses the rule
       the engine column has.
@@ -123,7 +123,7 @@ def quote_html(text: str) -> str:
 def inr_compact(value: float) -> str:
     """Lakh/crore short form for headline figures."""
     if value is None:
-        return "—"
+        return "n/a"
     if abs(value) >= 1e7:
         return f"₹{value / 1e7:,.2f} Cr"
     if abs(value) >= 1e5:
@@ -136,7 +136,7 @@ def inr_compact(value: float) -> str:
 def load_local() -> tuple[pd.DataFrame, dict]:
     if not LOCAL_AUDIT_LOG.exists():
         raise FileNotFoundError(
-            f"{LOCAL_AUDIT_LOG} not found — run `python scripts/run_pipeline.py` first."
+            f"{LOCAL_AUDIT_LOG} not found. Run `python scripts/run_pipeline.py` first."
         )
     records = [json.loads(line) for line in LOCAL_AUDIT_LOG.read_text(encoding="utf-8").splitlines() if line.strip()]
     flat = []
@@ -195,7 +195,7 @@ def base_layout(fig: go.Figure, height: int) -> go.Figure:
 def value_split_chart(cleared: float, flagged: float) -> go.Figure:
     """Part-to-whole of settlement value: cleared vs held for review.
 
-    One stacked horizontal bar rather than a two-slice pie — the reader's job is
+    One stacked horizontal bar rather than a two-slice pie. The reader's job is
     "how much of the money is held up", which a proportion bar answers directly.
     Both segments are direct-labelled, so the split is never tooltip-only.
     """
@@ -219,7 +219,7 @@ def value_split_chart(cleared: float, flagged: float) -> go.Figure:
             text=[inside],
             textposition="inside",
             insidetextanchor="middle",
-            # White on the saturated fill — the only place white text is right
+            # White on the saturated fill, the only place white text is right
             # on a light surface, because it sits on the mark, not the page.
             textfont={"family": FONT, "color": "#ffffff", "size": 13},
             hovertemplate=f"<b>{label}</b><br>{inr(value)}<br>%{{customdata:.1f}}%<extra></extra>",
@@ -232,7 +232,7 @@ def value_split_chart(cleared: float, flagged: float) -> go.Figure:
 
 
 def exceptions_by_category_chart(frame: pd.DataFrame) -> go.Figure:
-    """Exception count by type — nominal categories, so one hue for every bar.
+    """Exception count by type. Nominal categories, so one hue for every bar.
 
     Clean matches are excluded on purpose: at 136 of 150 they compress every
     exception bar to a few pixels, and the clean count is already the headline
@@ -266,7 +266,7 @@ def exceptions_by_category_chart(frame: pd.DataFrame) -> go.Figure:
             hovertemplate="<b>%{y}</b><br>%{x} orders held<extra></extra>",
         )
     )
-    # Headroom for the outside labels — without it the longest bar's label is
+    # Headroom for the outside labels. Without it the longest bar's label is
     # clipped by the plot edge.
     fig.update_xaxes(visible=False, range=[0, max(grouped["count"].max() * 2.2, 1)])
     fig.update_yaxes(
@@ -281,7 +281,7 @@ def exceptions_by_category_chart(frame: pd.DataFrame) -> go.Figure:
 
 # --- Page ---------------------------------------------------------------------
 st.set_page_config(
-    page_title="SettleTrace — Settlement Reconciliation",
+    page_title="SettleTrace: Settlement Reconciliation",
     page_icon="🧾",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -340,7 +340,7 @@ st.markdown(
 
       /* Streamlit renders each element in its own block, so a hand-written
          <div class="card"> can't wrap a chart. Style the native bordered
-         container instead — st.container(border=True). */
+         container instead, st.container(border=True). */
       div[data-testid="stVerticalBlockBorderWrapper"] {{
         background: {SURFACE}; border: 1px solid {HAIRLINE};
         border-radius: 10px; padding: 1.1rem 1.25rem;
@@ -360,7 +360,7 @@ st.markdown(
         margin-bottom: 0.9rem;
       }}
       /* Small caps headings used inside a card (the two columns of an exception
-         card) and in the sidebar — distinct from the section headings above. */
+         card) and in the sidebar, distinct from the section headings above. */
       .col-title {{
         font-family: {FONT}; font-size: 0.7rem; font-weight: 700;
         letter-spacing: 0.08em; text-transform: uppercase; color: {INK_MUTED};
@@ -479,17 +479,17 @@ head_left, head_right = st.columns([3, 2])
 with head_left:
     st.markdown(
         "<p class='brand'>SettleTrace</p>"
-        "<p class='brand-sub'>Settlement reconciliation — matched, explained, and held for review</p>",
+        "<p class='brand-sub'>Settlement reconciliation: matched, explained, and held for review</p>",
         unsafe_allow_html=True,
     )
 with head_right:
-    model = next((m for m in df.get("agent_model", pd.Series(dtype=str)).dropna().unique()), "—")
+    model = next((m for m in df.get("agent_model", pd.Series(dtype=str)).dropna().unique()), "n/a")
     prompt_version = next(
-        (p for p in df.get("agent_prompt_version", pd.Series(dtype=str)).dropna().unique()), "—"
+        (p for p in df.get("agent_prompt_version", pd.Series(dtype=str)).dropna().unique()), "n/a"
     )
-    run_id = df["run_id"].iloc[0] if len(df) else "—"
+    run_id = df["run_id"].iloc[0] if len(df) else "n/a"
     started = run_summary.get("run_started_at") or (
-        df["run_started_at"].iloc[0] if "run_started_at" in df.columns and len(df) else "—"
+        df["run_started_at"].iloc[0] if "run_started_at" in df.columns and len(df) else "n/a"
     )
     st.markdown(
         f"<div class='prov'>run <code>{run_id}</code> &nbsp; {started}<br>"
@@ -518,7 +518,7 @@ tiles = [
     (k2, "Value cleared", inr_compact(value_cleared), inr(value_cleared), False),
     (k3, "Value held", inr_compact(value_flagged), f"{held_share:.1%} of settled value", False),
     (k4, "Needs review", f"{needs_review}", "every flagged order, whatever the agent's confidence", False),
-    (k5, "Autonomous actions", "0", "advisory only — no payout, ledger, or write-back", True),
+    (k5, "Autonomous actions", "0", "advisory only, no payout, ledger, or write-back", True),
 ]
 for column, label, value, note, accent in tiles:
     with column:
@@ -619,7 +619,7 @@ for _, row in queue.iterrows():
         left, right = st.columns([1, 1])
         with left:
             st.markdown(
-                "<div class='col-title'>Rule engine — authoritative</div>",
+                "<div class='col-title'>Rule engine, authoritative</div>",
                 unsafe_allow_html=True,
             )
             st.markdown(
@@ -651,13 +651,13 @@ for _, row in queue.iterrows():
                     row.get("evidence_actual_net_amount"),
                 )
                 + f"Settlement lines &nbsp; <b>{int(row['evidence_settlement_row_count'])}</b><br>"
-                + f"Batch &nbsp; <span class='mono'>{row.get('evidence_settlement_batch_id', '—')}</span>"
+                + f"Batch &nbsp; <span class='mono'>{row.get('evidence_settlement_batch_id', 'n/a')}</span>"
             )
             st.markdown(f"<div class='kv'>{evidence}</div>", unsafe_allow_html=True)
 
         with right:
             confidence = row.get("agent_confidence")
-            header = "Agent — advisory"
+            header = "Agent, advisory"
             if pd.notna(confidence):
                 header += f" &nbsp;·&nbsp; confidence {float(confidence):.2f}"
             st.markdown(f"<div class='col-title'>{header}</div>", unsafe_allow_html=True)
@@ -683,7 +683,7 @@ for _, row in queue.iterrows():
                 if not agrees:
                     st.markdown(
                         f"<div class='kv' style='color:{STATUS_CRITICAL};margin-top:0.5rem'>"
-                        f"Engine and agent differ — escalated rather than resolved toward either.</div>",
+                        f"Engine and agent differ; escalated rather than resolved toward either.</div>",
                         unsafe_allow_html=True,
                     )
 
@@ -695,7 +695,7 @@ for _, row in queue.iterrows():
         )
 
 # --- Table view (the WCAG-clean twin of every chart above) --------------------
-with st.expander(f"Table view — all {len(view)} orders in scope"):
+with st.expander(f"Table view: all {len(view)} orders in scope"):
     columns = [
         "order_id",
         "engine_match_tier",

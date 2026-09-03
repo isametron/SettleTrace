@@ -5,7 +5,7 @@ Chains the two notebooks the way the cluster does: runs
 `reconciliation_result`, feeds that to `03_reason_and_audit.py`, and asserts the
 resulting `audit_log` is well formed and its governance invariants hold.
 
-This does make real calls to the configured serving endpoint — the point is to
+This does make real calls to the configured serving endpoint. The point is to
 exercise the notebook's actual code path, not a mock of it. Keep
 `--clean-controls` small to keep the bill small.
 
@@ -50,7 +50,7 @@ def main() -> int:
 
     spark = build_local_spark("notebook03-test")
     try:
-        # Stage 2 first — notebook 03 reads what it writes.
+        # Stage 2 first, because notebook 03 reads what it writes.
         _, written = run_reconciliation_notebook(spark, quiet=True)
         result_table = f"{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}.reconciliation_result"
         assert result_table in written, "notebook 02 didn't write reconciliation_result"
@@ -88,7 +88,7 @@ def main() -> int:
 
         source = NOTEBOOK_03.read_text(encoding="utf-8")
         exec_globals = {"dbutils": dbutils, "spark": spark, "display": display}
-        exec(compile(source, str(NOTEBOOK_03), "exec"), exec_globals)  # noqa: S102 -- our own notebook source
+        exec(compile(source, str(NOTEBOOK_03), "exec"), exec_globals)  # noqa: S102  # our own notebook source
 
         audit_table = f"{DEFAULT_CATALOG}.{DEFAULT_SCHEMA}.audit_log"
         assert audit_table in written_03, "notebook 03 didn't write audit_log"
@@ -99,7 +99,7 @@ def main() -> int:
 
         assert len(rows) == len(records) == 150, f"expected 150 audit rows, got {len(rows)}"
 
-        # Governance invariants — the claims the audit trail makes about itself.
+        # Governance invariants: the claims the audit trail makes about itself.
         assert {r["action_taken"] for r in rows} == {"none"}, "action_taken must be 'none' everywhere"
         assert {r["autonomous_action_taken"] for r in rows} == {False}, (
             "autonomous_action_taken must be False everywhere"

@@ -1,4 +1,4 @@
-"""Day 4 prototype — manual, 5-sample spot-check of the LLM reasoning layer.
+"""Day 4 prototype: a manual, 5-sample spot-check of the LLM reasoning layer.
 
 Feeds one hand-picked order per category (four exception types + one clean
 control) from the frozen demo batch to the local model and prints the diagnosis
@@ -6,7 +6,7 @@ against `ground_truth`, for eyeballing. This is the small, readable harness used
 to validate the prompt before it was automated.
 
 The prompt, response schema, and case-building all live in
-scripts/reasoning_agent.py — shared with the automated pipeline
+scripts/reasoning_agent.py, shared with the automated pipeline
 (scripts/run_pipeline.py), so what this prints is exactly what the pipeline
 runs, not a drifting copy of it.
 
@@ -61,7 +61,7 @@ def main() -> int:
         try:
             diagnosis, latency_ms = agent.diagnose(case)
         except APIConnectionError:
-            print(f"Could not reach {agent.base_url} — is the local server running?")
+            print(f"Could not reach {agent.base_url}. Is the local server running?")
             return 1
         except APIStatusError as e:
             print(f"Local server returned an error: {e}")

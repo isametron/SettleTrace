@@ -2,8 +2,8 @@ r"""Local, real-Spark correctness test of notebooks/02_reconcile_settlements.py.
 
 Asserts the notebook classifies all 150 demo-batch orders in agreement with
 `ground_truth`. The Spark session, demo-batch schemas, and notebook-execution
-shim live in scripts/local_spark_harness.py, shared with scripts/run_pipeline.py
-— see that module's docstring for why the notebook is exec'd against real Spark
+shim live in scripts/local_spark_harness.py, shared with scripts/run_pipeline.py.
+See that module's docstring for why the notebook is exec'd against real Spark
 rather than faked, and for the JDK/PYSPARK_PYTHON environment it needs.
 
     uv run python scripts/test_reconcile_local.py

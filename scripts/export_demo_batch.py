@@ -1,8 +1,8 @@
 """Export the canonical demo batch to fixed CSV files under data/demo_batch/.
 
 notebooks/01_generate_synthetic_data.py is the single source of truth for the
-generation logic. This script runs it outside Databricks — stubbing the
-injected `dbutils` / `spark` / `display` globals with local equivalents — and
+generation logic. This script runs it outside Databricks, stubbing the
+injected `dbutils` / `spark` / `display` globals with local equivalents, and
 writes its output to CSV so the demo batch is a checked-in, reproducible file
 rather than something regenerated (with the same seed, but on cluster state
 that isn't ours to freeze) every time.
@@ -106,7 +106,7 @@ def main():
 
     source = NOTEBOOK_PATH.read_text(encoding="utf-8")
     exec_globals = {"dbutils": dbutils, "spark": FakeSpark(), "display": display}
-    exec(compile(source, str(NOTEBOOK_PATH), "exec"), exec_globals)  # noqa: S102 -- running our own notebook source, not untrusted input
+    exec(compile(source, str(NOTEBOOK_PATH), "exec"), exec_globals)  # noqa: S102  # running our own notebook source, not untrusted input
 
     write_csv(
         exec_globals["orders"],
