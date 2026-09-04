@@ -32,6 +32,19 @@ order deterministically, asks a language model to independently explain the
 exceptions, and writes an audit record for every order that states what was
 decided, on what evidence, and that nothing was actioned.
 
+## Prior art
+
+Razorpay ships **Recon**, an AI-powered reconciliation product that automates
+matching across payment gateway, bank and POS sources, claiming up to 200
+million transactions a month and an 80% efficiency gain. This is not an attempt
+to rebuild it.
+
+Recon automates the matching. SettleTrace is about what matching leaves behind:
+whether each exception can be explained in the numbers that produced it, what
+should be done about it, and whether a machine should be trusted to do it. The
+public announcement states no methodology, so nothing here is a claim about how
+Recon works internally.
+
 ## How it works
 
 ```mermaid
