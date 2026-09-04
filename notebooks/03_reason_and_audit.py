@@ -342,6 +342,7 @@ from pyspark.sql.types import (
 
 AUDIT_COLUMN_TYPES = {
     "agent_invoked": BooleanType(),
+    "agent_explanation_cites_figures": BooleanType(),
     "autonomous_action_taken": BooleanType(),
     "agent_confidence": DoubleType(),
     "agent_latency_ms": LongType(),

@@ -87,10 +87,10 @@ letting the model overrule the engine would *lower* accuracy.
 | **No autonomous action** | There is no execution path in this repository. `action_taken: "none"` and `autonomous_action_taken: false` are on **every record**, not just the run summary, and are constants by construction rather than values a run could set otherwise. | any row of `audit_log`; verified on the cluster by querying `SUM(autonomous_action_taken) = 0` |
 
 One measurement drove the gating design. **Confidence is not a usable routing
-signal**: mean agent confidence across a run was 0.961, and the two wrong
+signal**: on the 7B run, mean agent confidence was 0.961 and the two wrong
 answers came in at 0.95 and 1.00, at or above average. An auto-clear threshold
 at 0.95 would have passed both misses through. That is why nothing auto-clears
-on agent confidence.
+on agent confidence, on any model.
 
 Note on provenance: the wording above is quoted from the brief. It is not
 otherwise reproduced in this repository.
@@ -181,10 +181,21 @@ Same prompt, same 19 orders (14 flagged plus 5 clean controls), different model:
 The engine scores 150/150 in every case. Clean controls: 5/5 on both backends,
 so neither model invented exceptions on clean orders.
 
-The committed artifacts in `data/audit_log/` are from the 7B run. They record
-prompt version `e07e929411a5`; the current prompt differs from it only in
-punctuation, and since the version is a hash of the prompt text, the next run
-will record a different one.
+`PROMPT_VERSION` is a SHA-256 of the prompt text, so rewording it re-versions
+every record automatically. That was exercised: the prompt was reworded (only
+punctuation changed), the hash moved from `e07e929411a5` to `39b2e0228d39`, and
+the cluster run was repeated under the new hash. **The 70B reproduced 19/19**,
+so the reword changed the provenance and not the behaviour, which is the point
+of deriving the version from the text rather than maintaining it by hand.
+
+Mean confidence on that run was 0.932, and all 19 explanations cited a specific
+figure rather than restating the category name (`explanation_cites_figures` in
+`scripts/audit_trail.py`, recorded per row and counted per run).
+
+The committed artifacts in `data/audit_log/` are still the older 7B run at
+`e07e929411a5`, kept deliberately: it is the run where the agent gets two orders
+wrong, so it is the one that demonstrates the disagreement path actually
+working. The live `audit_log` Delta table is the current 70B run.
 
 ### The two failure modes the 7B model had and the 70B did not
 
